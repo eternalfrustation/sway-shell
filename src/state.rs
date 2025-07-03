@@ -1,31 +1,7 @@
-use raw_window_handle::{
-    RawDisplayHandle, RawWindowHandle, WaylandDisplayHandle, WaylandWindowHandle,
-};
-use std::ptr::NonNull;
-use wayland_client::{Connection, Proxy, globals::registry_queue_init};
+use wayland_client::Proxy;
 
-use futures::{
-    SinkExt, Stream, StreamExt,
-    channel::mpsc::{self, SendError, Sender},
-    stream,
-};
+use futures::StreamExt;
 use mpd::Status;
-use smithay_client_toolkit::{
-    compositor::{CompositorHandler, CompositorState},
-    delegate_compositor, delegate_layer, delegate_output, delegate_registry, delegate_seat,
-    output::{OutputHandler, OutputState},
-    registry::{ProvidesRegistryState, RegistryState},
-    registry_handlers,
-    seat::{SeatHandler, SeatState},
-    shell::{
-        WaylandSurface,
-        wlr_layer::{
-            Anchor, Layer, LayerShell, LayerShellHandler, LayerSurface, LayerSurfaceConfigure,
-        },
-    },
-};
-use swayipc::{Event, EventType, Node, Rect, WorkspaceChange};
-use tokio::runtime::Runtime;
 
 use crate::sway::Workspace;
 

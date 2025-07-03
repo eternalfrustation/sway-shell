@@ -7,12 +7,7 @@ use wayland_client::{
     globals::{GlobalList, registry_queue_init},
 };
 
-use futures::{
-    SinkExt, Stream, StreamExt,
-    channel::mpsc::{self, SendError, Sender},
-    stream,
-};
-use mpd::Status;
+use futures::StreamExt;
 use smithay_client_toolkit::{
     compositor::{CompositorHandler, CompositorState},
     delegate_compositor, delegate_layer, delegate_output, delegate_registry, delegate_seat,
@@ -23,12 +18,10 @@ use smithay_client_toolkit::{
     shell::{
         WaylandSurface,
         wlr_layer::{
-            Anchor, Layer, LayerShell, LayerShellHandler, LayerSurface, LayerSurfaceConfigure,
+            Anchor, Layer, LayerShell, LayerShellHandler, LayerSurface,
         },
     },
 };
-use swayipc::{Event, EventType, Node, Rect, WorkspaceChange};
-use tokio::runtime::Runtime;
 
 #[derive(Debug)]
 pub struct Wgpu {
