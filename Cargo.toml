@@ -15,4 +15,4 @@ swayipc = "3.0.3"
 tokio = { version = "1.46.0", features = ["macros", "rt-multi-thread"] }
 wayland-backend = { version = "0.3.10", features = ["raw-window-handle", "client_system"] }
 wayland-client = "0.31.10"
-wgpu = { version = "25.0.2", default-features = false, features = ["vulkan", "wgsl"] }
+wgpu = { version = "25.0.2", default-features = false, features = ["vulkan", "wgsl", "gles"] }

@@ -1,34 +1,30 @@
 use raw_window_handle::{
     RawDisplayHandle, RawWindowHandle, WaylandDisplayHandle, WaylandWindowHandle,
 };
-use std::{ptr::NonNull, sync::Arc};
+use std::{borrow::Cow, ptr::NonNull, sync::Arc};
 use wayland_client::{
     Connection, Dispatch, DispatchError, EventQueue, Proxy, QueueHandle,
     backend::ObjectData,
+    globals::GlobalListContents,
     globals::{GlobalList, registry_queue_init},
-
-            globals::GlobalListContents,
-            protocol::{
-                wl_callback::WlCallback, wl_compositor::WlCompositor, wl_output::WlOutput,
-                wl_registry::WlRegistry, wl_seat::WlSeat, wl_surface::WlSurface,
-            },
+    protocol::{
+        wl_callback::WlCallback, wl_compositor::WlCompositor, wl_output::WlOutput,
+        wl_registry::WlRegistry, wl_seat::WlSeat, wl_surface::WlSurface,
+    },
     protocol::{
         wl_keyboard::{self, WlKeyboard},
         wl_pointer::{self, WlPointer},
         wl_surface,
     },
 };
+use wgpu::RenderPipeline;
 
 use futures::StreamExt;
 use smithay_client_toolkit::{
     compositor::{CompositorHandler, CompositorState, SurfaceData},
-    delegate_compositor, delegate_keyboard, delegate_layer, delegate_output, delegate_pointer,
-    delegate_registry, delegate_seat,
     globals::GlobalData,
     output::{OutputData, OutputHandler, OutputState},
     reexports::{
-        client::{
-        },
         protocols::{
             wp::cursor_shape::v1::client::{
                 wp_cursor_shape_device_v1::WpCursorShapeDeviceV1,
@@ -43,21 +39,24 @@ use smithay_client_toolkit::{
         },
     },
     registry::{ProvidesRegistryState, RegistryHandler, RegistryState},
-    registry_handlers,
     seat::{
-        keyboard::{KeyEvent, KeyboardData, KeyboardHandler, Keysym, Modifiers}, pointer::{
-            cursor_shape::CursorShapeManager, PointerData, PointerEvent, PointerEventKind, PointerHandler
-        }, Capability, SeatData, SeatHandler, SeatState
+        Capability, SeatData, SeatHandler, SeatState,
+        keyboard::{KeyEvent, KeyboardData, KeyboardHandler, Keysym, Modifiers},
+        pointer::{
+            PointerData, PointerEvent, PointerEventKind, PointerHandler,
+            cursor_shape::CursorShapeManager,
+        },
     },
     shell::{
+        WaylandSurface,
         wlr_layer::{
             Anchor, KeyboardInteractivity, Layer, LayerShell, LayerShellHandler, LayerSurface,
             LayerSurfaceData,
-        }, WaylandSurface
+        },
     },
 };
 
-use crate::viewable::Viewable;
+use crate::{state::State, viewable::Viewable};
 
 #[derive(Debug)]
 pub struct Renderer<S> {
@@ -79,10 +78,14 @@ pub struct Renderer<S> {
     pub surface: wgpu::Surface<'static>,
     pub keyboard: Option<WlKeyboard>,
     pub pointer: Option<WlPointer>,
+    pub render_pipeline: RenderPipeline,
 }
 
-impl<S: Viewable + 'static> Renderer<S> {
-    pub async fn new( state: Arc<S>) -> (Self, EventQueue<Self>) {
+impl<S: Viewable<Self> + 'static> Renderer<S>
+where
+    Renderer<S>: CompositorHandler,
+{
+    pub async fn new(state: Arc<S>) -> (Self, EventQueue<Self>) {
         const HEIGHT: u32 = 20;
         let wayland_conn =
             Connection::connect_to_env().expect("To be able to connect to the compositor");
@@ -147,6 +150,42 @@ impl<S: Viewable + 'static> Renderer<S> {
             .await
             .expect("Failed to request device");
 
+        // Load the shaders from disk
+        let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: None,
+            source: wgpu::ShaderSource::Wgsl(Cow::Borrowed(include_str!("shader.wgsl"))),
+        });
+
+        let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: None,
+            bind_group_layouts: &[],
+            push_constant_ranges: &[],
+        });
+
+        let swapchain_capabilities = surface.get_capabilities(&adapter);
+        let swapchain_format = swapchain_capabilities.formats[0];
+
+        let render_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: None,
+            layout: Some(&pipeline_layout),
+            vertex: wgpu::VertexState {
+                module: &shader,
+                entry_point: Some("vs_main"),
+                buffers: &[],
+                compilation_options: Default::default(),
+            },
+            fragment: Some(wgpu::FragmentState {
+                module: &shader,
+                entry_point: Some("fs_main"),
+                compilation_options: Default::default(),
+                targets: &[Some(swapchain_format.into())],
+            }),
+            primitive: wgpu::PrimitiveState::default(),
+            depth_stencil: None,
+            multisample: wgpu::MultisampleState::default(),
+            multiview: None,
+            cache: None,
+        });
         (
             Renderer {
                 state,
@@ -168,19 +207,19 @@ impl<S: Viewable + 'static> Renderer<S> {
                 keyboard: None,
                 pointer: None,
                 globals,
+                render_pipeline,
             },
             event_queue,
         )
     }
 
+    /// Actual rendering happens in CompositorHandler::frame
     pub fn start_event_loop(
         mut self,
         mut event_queue: EventQueue<Self>,
     ) -> Result<(), EventLoopError> {
         loop {
             event_queue.blocking_dispatch(&mut self)?;
-
-
             self.layer.commit();
 
             if self.exit {
@@ -276,7 +315,7 @@ impl<S> LayerShellHandler for Renderer<S> {
     }
 }
 
-impl<S> CompositorHandler for Renderer<S> {
+impl CompositorHandler for Renderer<State> {
     fn scale_factor_changed(
         &mut self,
         conn: &Connection,
@@ -305,6 +344,7 @@ impl<S> CompositorHandler for Renderer<S> {
         time: u32,
     ) {
         log::info!("Wgpu::frame");
+        State::draw_frame(self.state.clone(), self);
     }
 
     fn surface_enter(
@@ -328,7 +368,7 @@ impl<S> CompositorHandler for Renderer<S> {
     }
 }
 
-impl<S: Viewable + 'static> OutputHandler for Renderer<S> {
+impl<S: Viewable<Self> + 'static> OutputHandler for Renderer<S> {
     fn output_state(&mut self) -> &mut OutputState {
         &mut self.output_state
     }
@@ -370,7 +410,10 @@ impl<S: Viewable + 'static> OutputHandler for Renderer<S> {
     }
 }
 
-impl<S: Viewable + 'static> SeatHandler for Renderer<S> {
+impl<S: Viewable<Self> + 'static> SeatHandler for Renderer<S>
+where
+    Renderer<S>: CompositorHandler,
+{
     fn seat_state(&mut self) -> &mut SeatState {
         &mut self.seat_state
     }
@@ -432,7 +475,10 @@ impl<S: Viewable + 'static> SeatHandler for Renderer<S> {
     }
 }
 
-impl<S: Viewable + 'static> PointerHandler for Renderer<S> {
+impl<S: Viewable<Self> + 'static> PointerHandler for Renderer<S>
+where
+    Renderer<S>: CompositorHandler,
+{
     fn pointer_frame(
         &mut self,
         _conn: &Connection,
@@ -475,7 +521,7 @@ impl<S: Viewable + 'static> PointerHandler for Renderer<S> {
     }
 }
 
-impl<S: Viewable + 'static> KeyboardHandler for Renderer<S> {
+impl<S: Viewable<Self> + 'static> KeyboardHandler for Renderer<S> {
     fn enter(
         &mut self,
         _: &Connection,
@@ -544,7 +590,10 @@ impl<S: Viewable + 'static> KeyboardHandler for Renderer<S> {
 }
 
 // All the dispatch handler macros, inlined
-impl<S: Viewable + 'static> Dispatch<WlCompositor, GlobalData> for Renderer<S> {
+impl<S: Viewable<Self> + 'static> Dispatch<WlCompositor, GlobalData> for Renderer<S>
+where
+    Renderer<S>: CompositorHandler,
+{
     fn event(
         state: &mut Self,
         proxy: &WlCompositor,
@@ -563,7 +612,10 @@ impl<S: Viewable + 'static> Dispatch<WlCompositor, GlobalData> for Renderer<S> {
         )
     }
 }
-impl<S: Viewable + 'static> Dispatch<WlCallback, WlSurface> for Renderer<S> {
+impl<S: Viewable<Self> + 'static> Dispatch<WlCallback, WlSurface> for Renderer<S>
+where
+    Renderer<S>: CompositorHandler,
+{
     fn event(
         state: &mut Self,
         proxy: &WlCallback,
@@ -582,7 +634,10 @@ impl<S: Viewable + 'static> Dispatch<WlCallback, WlSurface> for Renderer<S> {
         )
     }
 }
-impl<S: Viewable + 'static> Dispatch<WlSurface, SurfaceData> for Renderer<S> {
+impl<S: Viewable<Self> + 'static> Dispatch<WlSurface, SurfaceData> for Renderer<S>
+where
+    Renderer<S>: CompositorHandler,
+{
     fn event(
         state: &mut Self,
         proxy: &WlSurface,
@@ -601,7 +656,7 @@ impl<S: Viewable + 'static> Dispatch<WlSurface, SurfaceData> for Renderer<S> {
         )
     }
 }
-impl<S: Viewable + 'static> Dispatch<WlOutput, OutputData> for Renderer<S> {
+impl<S: Viewable<Self> + 'static> Dispatch<WlOutput, OutputData> for Renderer<S> {
     fn event(
         state: &mut Self,
         proxy: &WlOutput,
@@ -618,7 +673,7 @@ impl<S: Viewable + 'static> Dispatch<WlOutput, OutputData> for Renderer<S> {
         <OutputState as Dispatch<WlOutput, OutputData, Self>>::event_created_child(opcode, qhandle)
     }
 }
-impl<S: Viewable + 'static> Dispatch<ZxdgOutputManagerV1, GlobalData> for Renderer<S> {
+impl<S: Viewable<Self> + 'static> Dispatch<ZxdgOutputManagerV1, GlobalData> for Renderer<S> {
     fn event(
         state: &mut Self,
         proxy: &ZxdgOutputManagerV1,
@@ -637,7 +692,7 @@ impl<S: Viewable + 'static> Dispatch<ZxdgOutputManagerV1, GlobalData> for Render
         )
     }
 }
-impl<S: Viewable + 'static> Dispatch<ZxdgOutputV1, OutputData> for Renderer<S> {
+impl<S: Viewable<Self> + 'static> Dispatch<ZxdgOutputV1, OutputData> for Renderer<S> {
     fn event(
         state: &mut Self,
         proxy: &ZxdgOutputV1,
@@ -657,7 +712,10 @@ impl<S: Viewable + 'static> Dispatch<ZxdgOutputV1, OutputData> for Renderer<S> {
     }
 }
 
-impl<S: Viewable + 'static> Dispatch<WlSeat, SeatData> for Renderer<S> {
+impl<S: Viewable<Self> + 'static> Dispatch<WlSeat, SeatData> for Renderer<S>
+where
+    Renderer<S>: CompositorHandler,
+{
     fn event(
         state: &mut Self,
         proxy: &WlSeat,
@@ -675,7 +733,7 @@ impl<S: Viewable + 'static> Dispatch<WlSeat, SeatData> for Renderer<S> {
     }
 }
 
-impl<S: Viewable + 'static> Dispatch<WlKeyboard, KeyboardData<Renderer<S>>> for Renderer<S> {
+impl<S: Viewable<Self> + 'static> Dispatch<WlKeyboard, KeyboardData<Renderer<S>>> for Renderer<S> {
     fn event(
         state: &mut Self,
         proxy: &WlKeyboard,
@@ -694,7 +752,7 @@ impl<S: Viewable + 'static> Dispatch<WlKeyboard, KeyboardData<Renderer<S>>> for 
         )
     }
 }
-impl<S: Viewable + 'static> Dispatch<WpCursorShapeManagerV1, GlobalData> for Renderer<S> {
+impl<S: Viewable<Self> + 'static> Dispatch<WpCursorShapeManagerV1, GlobalData> for Renderer<S> {
     fn event(
         state: &mut Self,
         proxy: &WpCursorShapeManagerV1,
@@ -711,7 +769,7 @@ impl<S: Viewable + 'static> Dispatch<WpCursorShapeManagerV1, GlobalData> for Ren
         <CursorShapeManager as Dispatch<WpCursorShapeManagerV1,GlobalData,Self>>::event_created_child(opcode,qhandle)
     }
 }
-impl<S: Viewable + 'static> Dispatch<WpCursorShapeDeviceV1, GlobalData> for Renderer<S> {
+impl<S: Viewable<Self> + 'static> Dispatch<WpCursorShapeDeviceV1, GlobalData> for Renderer<S> {
     fn event(
         state: &mut Self,
         proxy: &WpCursorShapeDeviceV1,
@@ -728,7 +786,10 @@ impl<S: Viewable + 'static> Dispatch<WpCursorShapeDeviceV1, GlobalData> for Rend
         <CursorShapeManager as Dispatch<WpCursorShapeDeviceV1,GlobalData,Self>>::event_created_child(opcode,qhandle)
     }
 }
-impl<S: Viewable + 'static> Dispatch<WlPointer, PointerData> for Renderer<S> {
+impl<S: Viewable<Self> + 'static> Dispatch<WlPointer, PointerData> for Renderer<S>
+where
+    Renderer<S>: CompositorHandler,
+{
     fn event(
         state: &mut Self,
         proxy: &WlPointer,
@@ -746,7 +807,7 @@ impl<S: Viewable + 'static> Dispatch<WlPointer, PointerData> for Renderer<S> {
     }
 }
 
-impl<S: Viewable + 'static> Dispatch<ZwlrLayerShellV1, GlobalData> for Renderer<S> {
+impl<S: Viewable<Self> + 'static> Dispatch<ZwlrLayerShellV1, GlobalData> for Renderer<S> {
     fn event(
         state: &mut Self,
         proxy: &ZwlrLayerShellV1,
@@ -765,7 +826,7 @@ impl<S: Viewable + 'static> Dispatch<ZwlrLayerShellV1, GlobalData> for Renderer<
         )
     }
 }
-impl<S: Viewable + 'static> Dispatch<ZwlrLayerSurfaceV1, LayerSurfaceData> for Renderer<S> {
+impl<S: Viewable<Self> + 'static> Dispatch<ZwlrLayerSurfaceV1, LayerSurfaceData> for Renderer<S> {
     fn event(
         state: &mut Self,
         proxy: &ZwlrLayerSurfaceV1,
@@ -785,7 +846,10 @@ impl<S: Viewable + 'static> Dispatch<ZwlrLayerSurfaceV1, LayerSurfaceData> for R
     }
 }
 
-impl<S: Viewable + 'static> Dispatch<WlRegistry, GlobalListContents> for Renderer<S> {
+impl<S: Viewable<Self> + 'static> Dispatch<WlRegistry, GlobalListContents> for Renderer<S>
+where
+    Renderer<S>: CompositorHandler,
+{
     fn event(
         state: &mut Self,
         proxy: &WlRegistry,
@@ -805,31 +869,36 @@ impl<S: Viewable + 'static> Dispatch<WlRegistry, GlobalListContents> for Rendere
     }
 }
 
-impl<S: Viewable + 'static> ProvidesRegistryState for Renderer<S> {
+impl<S: Viewable<Self> + 'static> ProvidesRegistryState for Renderer<S>
+where
+    Renderer<S>: CompositorHandler,
+{
     fn registry(&mut self) -> &mut RegistryState {
         &mut self.registry_state
     }
 
-        fn runtime_add_global(
-            &mut self,
-            conn: &Connection,
-            qh: &QueueHandle<Self>,
-            name: u32,
-            interface: &str,
-            version: u32,
-        ) {
-                <OutputState as RegistryHandler<Self>>::new_global(self, conn, qh, name, interface, version);
-                <SeatState as RegistryHandler<Self>>::new_global(self, conn, qh, name, interface, version);
-        }
+    fn runtime_add_global(
+        &mut self,
+        conn: &Connection,
+        qh: &QueueHandle<Self>,
+        name: u32,
+        interface: &str,
+        version: u32,
+    ) {
+        <OutputState as RegistryHandler<Self>>::new_global(
+            self, conn, qh, name, interface, version,
+        );
+        <SeatState as RegistryHandler<Self>>::new_global(self, conn, qh, name, interface, version);
+    }
 
-        fn runtime_remove_global(
-            &mut self,
-            conn: &Connection,
-            qh: &QueueHandle<Self>,
-            name: u32,
-            interface: &str,
-        ) {
-                <OutputState as RegistryHandler<Self>>::remove_global(self, conn, qh, name, interface);
-                <SeatState as RegistryHandler<Self>>::remove_global(self, conn, qh, name, interface);
-        }
+    fn runtime_remove_global(
+        &mut self,
+        conn: &Connection,
+        qh: &QueueHandle<Self>,
+        name: u32,
+        interface: &str,
+    ) {
+        <OutputState as RegistryHandler<Self>>::remove_global(self, conn, qh, name, interface);
+        <SeatState as RegistryHandler<Self>>::remove_global(self, conn, qh, name, interface);
+    }
 }

@@ -3,10 +3,8 @@ pub mod viewable;
 pub mod state;
 pub mod sway;
 
-use std::sync::Arc;
 
 use layer::Renderer;
-use smithay_client_toolkit::shell::WaylandSurface;
 use state::State;
 
 #[tokio::main]
