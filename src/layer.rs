@@ -3,22 +3,33 @@ use raw_window_handle::{
 };
 use std::ptr::NonNull;
 use wayland_client::{
-    Connection, EventQueue, Proxy,
+    Connection, EventQueue, Proxy, QueueHandle,
     globals::{GlobalList, registry_queue_init},
+    protocol::{
+        wl_keyboard::{self, WlKeyboard},
+        wl_pointer::{self, WlPointer},
+        wl_region::WlRegion,
+        wl_surface,
+    },
 };
 
 use futures::StreamExt;
 use smithay_client_toolkit::{
     compositor::{CompositorHandler, CompositorState},
-    delegate_compositor, delegate_layer, delegate_output, delegate_registry, delegate_seat,
+    delegate_compositor, delegate_keyboard, delegate_layer, delegate_output, delegate_pointer,
+    delegate_registry, delegate_seat,
     output::{OutputHandler, OutputState},
     registry::{ProvidesRegistryState, RegistryState},
     registry_handlers,
-    seat::{SeatHandler, SeatState},
+    seat::{
+        Capability, SeatHandler, SeatState,
+        keyboard::{KeyEvent, KeyboardHandler, Keysym, Modifiers},
+        pointer::{PointerEvent, PointerEventKind, PointerHandler},
+    },
     shell::{
         WaylandSurface,
         wlr_layer::{
-            Anchor, Layer, LayerShell, LayerShellHandler, LayerSurface,
+            Anchor, KeyboardInteractivity, Layer, LayerShell, LayerShellHandler, LayerSurface,
         },
     },
 };
@@ -38,6 +49,8 @@ pub struct Wgpu {
     pub device: wgpu::Device,
     pub queue: wgpu::Queue,
     pub surface: wgpu::Surface<'static>,
+    pub keyboard: Option<WlKeyboard>,
+    pub pointer: Option<WlPointer>,
 }
 
 impl Wgpu {
@@ -48,11 +61,13 @@ impl Wgpu {
             .expect("To be able to initialize the registry queue from the compositor");
         (wayland_conn, globals, event_queue)
     }
+
     pub async fn new(
         wayland_conn: Connection,
         globals: GlobalList,
         event_queue: &mut EventQueue<Wgpu>,
     ) -> Self {
+        const HEIGHT: u32 = 20;
         let qh = event_queue.handle();
         let compositor =
             CompositorState::bind(&globals, &qh).expect("wl_compositor is not available");
@@ -85,7 +100,10 @@ impl Wgpu {
             None,
         );
 
-        layer.set_anchor(Anchor::TOP);
+        layer.set_keyboard_interactivity(KeyboardInteractivity::OnDemand);
+
+        layer.set_anchor(Anchor::TOP.union(Anchor::LEFT).union(Anchor::RIGHT));
+        layer.set_size(0, HEIGHT);
         let surface = unsafe {
             instance
                 .create_surface_unsafe(wgpu::SurfaceTargetUnsafe::RawHandle {
@@ -118,12 +136,14 @@ impl Wgpu {
 
             exit: false,
             width: 256 * 4,
-            height: 256,
+            height: HEIGHT,
             layer,
             device,
             surface,
             adapter,
             queue,
+            keyboard: None,
+            pointer: None,
         }
     }
 }
@@ -164,7 +184,7 @@ impl LayerShellHandler for Wgpu {
             alpha_mode: wgpu::CompositeAlphaMode::Auto,
             width: self.width,
             height: self.height,
-            desired_maximum_frame_latency: 2,
+            desired_maximum_frame_latency: 1,
             // Wayland is inherently a mailbox system.
             present_mode: wgpu::PresentMode::Mailbox,
         };
@@ -187,7 +207,7 @@ impl LayerShellHandler for Wgpu {
                     view: &texture_view,
                     resolve_target: None,
                     ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(wgpu::Color::BLUE),
+                        load: wgpu::LoadOp::Clear(wgpu::Color::RED),
                         store: wgpu::StoreOp::Store,
                     },
                 })],
@@ -234,27 +254,10 @@ impl CompositorHandler for Wgpu {
     ) {
         log::info!("Wgpu::frame");
 
-        let adapter = &self.adapter;
         let surface = &self.surface;
         let device = &self.device;
         let queue = &self.queue;
 
-        let cap = surface.get_capabilities(&adapter);
-        let surface_config = wgpu::SurfaceConfiguration {
-            usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
-            format: cap.formats[0],
-            view_formats: vec![cap.formats[0]],
-            alpha_mode: wgpu::CompositeAlphaMode::Auto,
-            width: self.width,
-            height: self.height,
-            desired_maximum_frame_latency: 2,
-            // Wayland is inherently a mailbox system.
-            present_mode: wgpu::PresentMode::Mailbox,
-        };
-
-        surface.configure(&self.device, &surface_config);
-
-        // We don't plan to render much in this example, just clear the surface.
         let surface_texture = surface
             .get_current_texture()
             .expect("failed to acquire next swapchain texture");
@@ -270,7 +273,7 @@ impl CompositorHandler for Wgpu {
                     view: &texture_view,
                     resolve_target: None,
                     ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(wgpu::Color::BLUE),
+                        load: wgpu::LoadOp::Clear(wgpu::Color::GREEN),
                         store: wgpu::StoreOp::Store,
                     },
                 })],
@@ -322,13 +325,11 @@ impl OutputHandler for Wgpu {
             .output_state
             .info(&output)
             .expect("To be able to get the info of the output from current output state");
-        if let Some((width, height)) = output_info.logical_size {
+        if let Some((width, _)) = output_info.logical_size {
             self.width = width as u32;
-            self.height = 50;
             self.layer.set_size(self.width, self.height);
             self.layer.set_exclusive_zone(self.height as i32);
         }
-
         self.layer.commit();
     }
 
@@ -373,6 +374,24 @@ impl SeatHandler for Wgpu {
         capability: smithay_client_toolkit::seat::Capability,
     ) {
         log::info!("Wgpu::new_capability");
+
+        if capability == Capability::Keyboard && self.keyboard.is_none() {
+            log::info!("Set keyboard capability");
+            let keyboard = self
+                .seat_state
+                .get_keyboard(qh, &seat, None)
+                .expect("Failed to create keyboard");
+            self.keyboard = Some(keyboard);
+        }
+
+        if capability == Capability::Pointer && self.pointer.is_none() {
+            log::info!("Set pointer capability");
+            let pointer = self
+                .seat_state
+                .get_pointer(qh, &seat)
+                .expect("Failed to create pointer");
+            self.pointer = Some(pointer);
+        }
     }
 
     fn remove_capability(
@@ -395,10 +414,125 @@ impl SeatHandler for Wgpu {
     }
 }
 
+impl PointerHandler for Wgpu {
+    fn pointer_frame(
+        &mut self,
+        _conn: &Connection,
+        qh: &QueueHandle<Self>,
+        _pointer: &wl_pointer::WlPointer,
+        events: &[PointerEvent],
+    ) {
+        use PointerEventKind::*;
+        for event in events {
+            // Ignore events for other surfaces
+            if &event.surface != self.layer.wl_surface() {
+                continue;
+            }
+            match event.kind {
+                Enter { .. } => {
+                    log::info!("Pointer entered @{:?}", event.position);
+                }
+                Leave { .. } => {
+                    log::info!("Pointer left");
+                }
+                Motion { .. } => {}
+                Press { button, .. } => {
+                    log::info!("Press {:x} @ {:?}", button, event.position);
+                    self.layer
+                        .wl_surface()
+                        .frame(qh, self.layer.wl_surface().clone());
+                }
+                Release { button, .. } => {
+                    log::info!("Release {:x} @ {:?}", button, event.position);
+                }
+                Axis {
+                    horizontal,
+                    vertical,
+                    ..
+                } => {
+                    log::info!("Scroll H:{horizontal:?}, V:{vertical:?}");
+                }
+            }
+        }
+    }
+}
+
+impl KeyboardHandler for Wgpu {
+    fn enter(
+        &mut self,
+        _: &Connection,
+        _: &QueueHandle<Self>,
+        _: &wl_keyboard::WlKeyboard,
+        surface: &wl_surface::WlSurface,
+        _: u32,
+        _: &[u32],
+        keysyms: &[Keysym],
+    ) {
+        if self.layer.wl_surface() == surface {
+            log::info!("Keyboard focus on window with pressed syms: {keysyms:?}");
+        }
+    }
+
+    fn leave(
+        &mut self,
+        _: &Connection,
+        _: &QueueHandle<Self>,
+        _: &wl_keyboard::WlKeyboard,
+        surface: &wl_surface::WlSurface,
+        _: u32,
+    ) {
+        if self.layer.wl_surface() == surface {
+            log::info!("Release keyboard focus on window");
+        }
+    }
+
+    fn press_key(
+        &mut self,
+        _conn: &Connection,
+        _qh: &QueueHandle<Self>,
+        _: &wl_keyboard::WlKeyboard,
+        _: u32,
+        event: KeyEvent,
+    ) {
+        log::info!("Key press: {event:?}");
+        // press 'esc' to exit
+        if event.keysym == Keysym::Escape {
+            self.exit = true;
+        }
+    }
+
+    fn release_key(
+        &mut self,
+        _: &Connection,
+        _: &QueueHandle<Self>,
+        _: &wl_keyboard::WlKeyboard,
+        _: u32,
+        event: KeyEvent,
+    ) {
+        log::info!("Key release: {event:?}");
+    }
+
+    fn update_modifiers(
+        &mut self,
+        _: &Connection,
+        _: &QueueHandle<Self>,
+        _: &wl_keyboard::WlKeyboard,
+        _serial: u32,
+        modifiers: Modifiers,
+        _layout: u32,
+    ) {
+        log::info!("Update modifiers: {modifiers:?}");
+    }
+}
+
 delegate_compositor!(Wgpu);
 delegate_output!(Wgpu);
 
 delegate_seat!(Wgpu);
+
+delegate_keyboard!(Wgpu);
+delegate_pointer!(Wgpu);
+
 delegate_layer!(Wgpu);
 
 delegate_registry!(Wgpu);
@@ -410,4 +544,3 @@ impl ProvidesRegistryState for Wgpu {
 
     registry_handlers![OutputState, SeatState];
 }
-
