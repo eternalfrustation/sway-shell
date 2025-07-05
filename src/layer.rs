@@ -1,41 +1,69 @@
 use raw_window_handle::{
     RawDisplayHandle, RawWindowHandle, WaylandDisplayHandle, WaylandWindowHandle,
 };
-use std::ptr::NonNull;
+use std::{ptr::NonNull, sync::Arc};
 use wayland_client::{
-    Connection, EventQueue, Proxy, QueueHandle,
+    Connection, Dispatch, DispatchError, EventQueue, Proxy, QueueHandle,
+    backend::ObjectData,
     globals::{GlobalList, registry_queue_init},
+
+            globals::GlobalListContents,
+            protocol::{
+                wl_callback::WlCallback, wl_compositor::WlCompositor, wl_output::WlOutput,
+                wl_registry::WlRegistry, wl_seat::WlSeat, wl_surface::WlSurface,
+            },
     protocol::{
         wl_keyboard::{self, WlKeyboard},
         wl_pointer::{self, WlPointer},
-        wl_region::WlRegion,
         wl_surface,
     },
 };
 
 use futures::StreamExt;
 use smithay_client_toolkit::{
-    compositor::{CompositorHandler, CompositorState},
+    compositor::{CompositorHandler, CompositorState, SurfaceData},
     delegate_compositor, delegate_keyboard, delegate_layer, delegate_output, delegate_pointer,
     delegate_registry, delegate_seat,
-    output::{OutputHandler, OutputState},
-    registry::{ProvidesRegistryState, RegistryState},
+    globals::GlobalData,
+    output::{OutputData, OutputHandler, OutputState},
+    reexports::{
+        client::{
+        },
+        protocols::{
+            wp::cursor_shape::v1::client::{
+                wp_cursor_shape_device_v1::WpCursorShapeDeviceV1,
+                wp_cursor_shape_manager_v1::WpCursorShapeManagerV1,
+            },
+            xdg::xdg_output::zv1::client::{
+                zxdg_output_manager_v1::ZxdgOutputManagerV1, zxdg_output_v1::ZxdgOutputV1,
+            },
+        },
+        protocols_wlr::layer_shell::v1::client::{
+            zwlr_layer_shell_v1::ZwlrLayerShellV1, zwlr_layer_surface_v1::ZwlrLayerSurfaceV1,
+        },
+    },
+    registry::{ProvidesRegistryState, RegistryHandler, RegistryState},
     registry_handlers,
     seat::{
-        Capability, SeatHandler, SeatState,
-        keyboard::{KeyEvent, KeyboardHandler, Keysym, Modifiers},
-        pointer::{PointerEvent, PointerEventKind, PointerHandler},
+        keyboard::{KeyEvent, KeyboardData, KeyboardHandler, Keysym, Modifiers}, pointer::{
+            cursor_shape::CursorShapeManager, PointerData, PointerEvent, PointerEventKind, PointerHandler
+        }, Capability, SeatData, SeatHandler, SeatState
     },
     shell::{
-        WaylandSurface,
         wlr_layer::{
             Anchor, KeyboardInteractivity, Layer, LayerShell, LayerShellHandler, LayerSurface,
-        },
+            LayerSurfaceData,
+        }, WaylandSurface
     },
 };
 
+use crate::viewable::Viewable;
+
 #[derive(Debug)]
-pub struct Wgpu {
+pub struct Renderer<S> {
+    pub state: Arc<S>,
+    pub wayland_conn: Connection,
+    pub globals: GlobalList,
     pub registry_state: RegistryState,
     pub seat_state: SeatState,
     pub output_state: OutputState,
@@ -53,21 +81,13 @@ pub struct Wgpu {
     pub pointer: Option<WlPointer>,
 }
 
-impl Wgpu {
-    pub fn connect() -> (Connection, GlobalList, EventQueue<Wgpu>) {
+impl<S: Viewable + 'static> Renderer<S> {
+    pub async fn new( state: Arc<S>) -> (Self, EventQueue<Self>) {
+        const HEIGHT: u32 = 20;
         let wayland_conn =
             Connection::connect_to_env().expect("To be able to connect to the compositor");
         let (globals, event_queue) = registry_queue_init(&wayland_conn)
             .expect("To be able to initialize the registry queue from the compositor");
-        (wayland_conn, globals, event_queue)
-    }
-
-    pub async fn new(
-        wayland_conn: Connection,
-        globals: GlobalList,
-        event_queue: &mut EventQueue<Wgpu>,
-    ) -> Self {
-        const HEIGHT: u32 = 20;
         let qh = event_queue.handle();
         let compositor =
             CompositorState::bind(&globals, &qh).expect("wl_compositor is not available");
@@ -127,41 +147,73 @@ impl Wgpu {
             .await
             .expect("Failed to request device");
 
-        Wgpu {
-            compositor,
-            layer_shell,
-            registry_state: RegistryState::new(&globals),
-            seat_state: SeatState::new(&globals, &qh),
-            output_state: OutputState::new(&globals, &qh),
+        (
+            Renderer {
+                state,
+                wayland_conn,
+                compositor,
+                layer_shell,
+                registry_state: RegistryState::new(&globals),
+                seat_state: SeatState::new(&globals, &qh),
+                output_state: OutputState::new(&globals, &qh),
 
-            exit: false,
-            width: 256 * 4,
-            height: HEIGHT,
-            layer,
-            device,
-            surface,
-            adapter,
-            queue,
-            keyboard: None,
-            pointer: None,
+                exit: false,
+                width: 256 * 4,
+                height: HEIGHT,
+                layer,
+                device,
+                surface,
+                adapter,
+                queue,
+                keyboard: None,
+                pointer: None,
+                globals,
+            },
+            event_queue,
+        )
+    }
+
+    pub fn start_event_loop(
+        mut self,
+        mut event_queue: EventQueue<Self>,
+    ) -> Result<(), EventLoopError> {
+        loop {
+            event_queue.blocking_dispatch(&mut self)?;
+
+
+            self.layer.commit();
+
+            if self.exit {
+                log::info!("exiting example");
+                break;
+            }
         }
+        drop(self.surface);
+        drop(self.layer);
+        Ok(())
     }
 }
 
-impl LayerShellHandler for Wgpu {
-    fn closed(
-        &mut self,
-        conn: &Connection,
-        qh: &wayland_client::QueueHandle<Self>,
-        layer: &LayerSurface,
-    ) {
+#[derive(Debug)]
+pub enum EventLoopError {
+    EventQueueDispathError(DispatchError),
+}
+
+impl From<DispatchError> for EventLoopError {
+    fn from(value: DispatchError) -> Self {
+        Self::EventQueueDispathError(value)
+    }
+}
+
+impl<S> LayerShellHandler for Renderer<S> {
+    fn closed(&mut self, conn: &Connection, qh: &QueueHandle<Self>, layer: &LayerSurface) {
         self.exit = true;
     }
 
     fn configure(
         &mut self,
         conn: &Connection,
-        qh: &wayland_client::QueueHandle<Self>,
+        qh: &QueueHandle<Self>,
         layer: &LayerSurface,
         configure: smithay_client_toolkit::shell::wlr_layer::LayerSurfaceConfigure,
         serial: u32,
@@ -224,11 +276,11 @@ impl LayerShellHandler for Wgpu {
     }
 }
 
-impl CompositorHandler for Wgpu {
+impl<S> CompositorHandler for Renderer<S> {
     fn scale_factor_changed(
         &mut self,
         conn: &Connection,
-        qh: &wayland_client::QueueHandle<Self>,
+        qh: &QueueHandle<Self>,
         surface: &wayland_client::protocol::wl_surface::WlSurface,
         new_factor: i32,
     ) {
@@ -238,7 +290,7 @@ impl CompositorHandler for Wgpu {
     fn transform_changed(
         &mut self,
         conn: &Connection,
-        qh: &wayland_client::QueueHandle<Self>,
+        qh: &QueueHandle<Self>,
         surface: &wayland_client::protocol::wl_surface::WlSurface,
         new_transform: wayland_client::protocol::wl_output::Transform,
     ) {
@@ -248,51 +300,17 @@ impl CompositorHandler for Wgpu {
     fn frame(
         &mut self,
         conn: &Connection,
-        qh: &wayland_client::QueueHandle<Self>,
+        qh: &QueueHandle<Self>,
         surface: &wayland_client::protocol::wl_surface::WlSurface,
         time: u32,
     ) {
         log::info!("Wgpu::frame");
-
-        let surface = &self.surface;
-        let device = &self.device;
-        let queue = &self.queue;
-
-        let surface_texture = surface
-            .get_current_texture()
-            .expect("failed to acquire next swapchain texture");
-        let texture_view = surface_texture
-            .texture
-            .create_view(&wgpu::TextureViewDescriptor::default());
-
-        let mut encoder = device.create_command_encoder(&Default::default());
-        {
-            let _renderpass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: None,
-                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: &texture_view,
-                    resolve_target: None,
-                    ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(wgpu::Color::GREEN),
-                        store: wgpu::StoreOp::Store,
-                    },
-                })],
-                depth_stencil_attachment: None,
-                timestamp_writes: None,
-                occlusion_query_set: None,
-            });
-        }
-
-        // Submit the command in the queue to execute
-        queue.submit(Some(encoder.finish()));
-        surface_texture.present();
-        self.layer.commit();
     }
 
     fn surface_enter(
         &mut self,
         conn: &Connection,
-        qh: &wayland_client::QueueHandle<Self>,
+        qh: &QueueHandle<Self>,
         surface: &wayland_client::protocol::wl_surface::WlSurface,
         output: &wayland_client::protocol::wl_output::WlOutput,
     ) {
@@ -302,7 +320,7 @@ impl CompositorHandler for Wgpu {
     fn surface_leave(
         &mut self,
         conn: &Connection,
-        qh: &wayland_client::QueueHandle<Self>,
+        qh: &QueueHandle<Self>,
         surface: &wayland_client::protocol::wl_surface::WlSurface,
         output: &wayland_client::protocol::wl_output::WlOutput,
     ) {
@@ -310,7 +328,7 @@ impl CompositorHandler for Wgpu {
     }
 }
 
-impl OutputHandler for Wgpu {
+impl<S: Viewable + 'static> OutputHandler for Renderer<S> {
     fn output_state(&mut self) -> &mut OutputState {
         &mut self.output_state
     }
@@ -318,7 +336,7 @@ impl OutputHandler for Wgpu {
     fn new_output(
         &mut self,
         conn: &Connection,
-        qh: &wayland_client::QueueHandle<Self>,
+        qh: &QueueHandle<Self>,
         output: wayland_client::protocol::wl_output::WlOutput,
     ) {
         let output_info = self
@@ -336,7 +354,7 @@ impl OutputHandler for Wgpu {
     fn update_output(
         &mut self,
         conn: &Connection,
-        qh: &wayland_client::QueueHandle<Self>,
+        qh: &QueueHandle<Self>,
         output: wayland_client::protocol::wl_output::WlOutput,
     ) {
         log::info!("Wgpu::update_output");
@@ -345,14 +363,14 @@ impl OutputHandler for Wgpu {
     fn output_destroyed(
         &mut self,
         conn: &Connection,
-        qh: &wayland_client::QueueHandle<Self>,
+        qh: &QueueHandle<Self>,
         output: wayland_client::protocol::wl_output::WlOutput,
     ) {
         log::info!("Wgpu::output_destroyed");
     }
 }
 
-impl SeatHandler for Wgpu {
+impl<S: Viewable + 'static> SeatHandler for Renderer<S> {
     fn seat_state(&mut self) -> &mut SeatState {
         &mut self.seat_state
     }
@@ -360,7 +378,7 @@ impl SeatHandler for Wgpu {
     fn new_seat(
         &mut self,
         conn: &Connection,
-        qh: &wayland_client::QueueHandle<Self>,
+        qh: &QueueHandle<Self>,
         seat: wayland_client::protocol::wl_seat::WlSeat,
     ) {
         log::info!("Wgpu::new_seat");
@@ -369,7 +387,7 @@ impl SeatHandler for Wgpu {
     fn new_capability(
         &mut self,
         conn: &Connection,
-        qh: &wayland_client::QueueHandle<Self>,
+        qh: &QueueHandle<Self>,
         seat: wayland_client::protocol::wl_seat::WlSeat,
         capability: smithay_client_toolkit::seat::Capability,
     ) {
@@ -397,7 +415,7 @@ impl SeatHandler for Wgpu {
     fn remove_capability(
         &mut self,
         conn: &Connection,
-        qh: &wayland_client::QueueHandle<Self>,
+        qh: &QueueHandle<Self>,
         seat: wayland_client::protocol::wl_seat::WlSeat,
         capability: smithay_client_toolkit::seat::Capability,
     ) {
@@ -407,14 +425,14 @@ impl SeatHandler for Wgpu {
     fn remove_seat(
         &mut self,
         conn: &Connection,
-        qh: &wayland_client::QueueHandle<Self>,
+        qh: &QueueHandle<Self>,
         seat: wayland_client::protocol::wl_seat::WlSeat,
     ) {
         log::info!("Wgpu::remove_seat");
     }
 }
 
-impl PointerHandler for Wgpu {
+impl<S: Viewable + 'static> PointerHandler for Renderer<S> {
     fn pointer_frame(
         &mut self,
         _conn: &Connection,
@@ -457,7 +475,7 @@ impl PointerHandler for Wgpu {
     }
 }
 
-impl KeyboardHandler for Wgpu {
+impl<S: Viewable + 'static> KeyboardHandler for Renderer<S> {
     fn enter(
         &mut self,
         _: &Connection,
@@ -525,22 +543,293 @@ impl KeyboardHandler for Wgpu {
     }
 }
 
-delegate_compositor!(Wgpu);
-delegate_output!(Wgpu);
+// All the dispatch handler macros, inlined
+impl<S: Viewable + 'static> Dispatch<WlCompositor, GlobalData> for Renderer<S> {
+    fn event(
+        state: &mut Self,
+        proxy: &WlCompositor,
+        event: <WlCompositor as Proxy>::Event,
+        data: &GlobalData,
+        conn: &Connection,
+        qhandle: &QueueHandle<Self>,
+    ) {
+        <CompositorState as Dispatch<WlCompositor, GlobalData, Self>>::event(
+            state, proxy, event, data, conn, qhandle,
+        )
+    }
+    fn event_created_child(opcode: u16, qhandle: &QueueHandle<Self>) -> Arc<dyn ObjectData> {
+        <CompositorState as Dispatch<WlCompositor, GlobalData, Self>>::event_created_child(
+            opcode, qhandle,
+        )
+    }
+}
+impl<S: Viewable + 'static> Dispatch<WlCallback, WlSurface> for Renderer<S> {
+    fn event(
+        state: &mut Self,
+        proxy: &WlCallback,
+        event: <WlCallback as Proxy>::Event,
+        data: &WlSurface,
+        conn: &Connection,
+        qhandle: &QueueHandle<Self>,
+    ) {
+        <CompositorState as Dispatch<WlCallback, WlSurface, Self>>::event(
+            state, proxy, event, data, conn, qhandle,
+        )
+    }
+    fn event_created_child(opcode: u16, qhandle: &QueueHandle<Self>) -> Arc<dyn ObjectData> {
+        <CompositorState as Dispatch<WlCallback, WlSurface, Self>>::event_created_child(
+            opcode, qhandle,
+        )
+    }
+}
+impl<S: Viewable + 'static> Dispatch<WlSurface, SurfaceData> for Renderer<S> {
+    fn event(
+        state: &mut Self,
+        proxy: &WlSurface,
+        event: <WlSurface as Proxy>::Event,
+        data: &SurfaceData,
+        conn: &Connection,
+        qhandle: &QueueHandle<Self>,
+    ) {
+        <CompositorState as Dispatch<WlSurface, SurfaceData, Self>>::event(
+            state, proxy, event, data, conn, qhandle,
+        )
+    }
+    fn event_created_child(opcode: u16, qhandle: &QueueHandle<Self>) -> Arc<dyn ObjectData> {
+        <CompositorState as Dispatch<WlSurface, SurfaceData, Self>>::event_created_child(
+            opcode, qhandle,
+        )
+    }
+}
+impl<S: Viewable + 'static> Dispatch<WlOutput, OutputData> for Renderer<S> {
+    fn event(
+        state: &mut Self,
+        proxy: &WlOutput,
+        event: <WlOutput as Proxy>::Event,
+        data: &OutputData,
+        conn: &Connection,
+        qhandle: &QueueHandle<Self>,
+    ) {
+        <OutputState as Dispatch<WlOutput, OutputData, Self>>::event(
+            state, proxy, event, data, conn, qhandle,
+        )
+    }
+    fn event_created_child(opcode: u16, qhandle: &QueueHandle<Self>) -> Arc<dyn ObjectData> {
+        <OutputState as Dispatch<WlOutput, OutputData, Self>>::event_created_child(opcode, qhandle)
+    }
+}
+impl<S: Viewable + 'static> Dispatch<ZxdgOutputManagerV1, GlobalData> for Renderer<S> {
+    fn event(
+        state: &mut Self,
+        proxy: &ZxdgOutputManagerV1,
+        event: <ZxdgOutputManagerV1 as Proxy>::Event,
+        data: &GlobalData,
+        conn: &Connection,
+        qhandle: &QueueHandle<Self>,
+    ) {
+        <OutputState as Dispatch<ZxdgOutputManagerV1, GlobalData, Self>>::event(
+            state, proxy, event, data, conn, qhandle,
+        )
+    }
+    fn event_created_child(opcode: u16, qhandle: &QueueHandle<Self>) -> Arc<dyn ObjectData> {
+        <OutputState as Dispatch<ZxdgOutputManagerV1, GlobalData, Self>>::event_created_child(
+            opcode, qhandle,
+        )
+    }
+}
+impl<S: Viewable + 'static> Dispatch<ZxdgOutputV1, OutputData> for Renderer<S> {
+    fn event(
+        state: &mut Self,
+        proxy: &ZxdgOutputV1,
+        event: <ZxdgOutputV1 as Proxy>::Event,
+        data: &OutputData,
+        conn: &Connection,
+        qhandle: &QueueHandle<Self>,
+    ) {
+        <OutputState as Dispatch<ZxdgOutputV1, OutputData, Self>>::event(
+            state, proxy, event, data, conn, qhandle,
+        )
+    }
+    fn event_created_child(opcode: u16, qhandle: &QueueHandle<Self>) -> Arc<dyn ObjectData> {
+        <OutputState as Dispatch<ZxdgOutputV1, OutputData, Self>>::event_created_child(
+            opcode, qhandle,
+        )
+    }
+}
 
-delegate_seat!(Wgpu);
+impl<S: Viewable + 'static> Dispatch<WlSeat, SeatData> for Renderer<S> {
+    fn event(
+        state: &mut Self,
+        proxy: &WlSeat,
+        event: <WlSeat as Proxy>::Event,
+        data: &SeatData,
+        conn: &Connection,
+        qhandle: &QueueHandle<Self>,
+    ) {
+        <SeatState as Dispatch<WlSeat, SeatData, Self>>::event(
+            state, proxy, event, data, conn, qhandle,
+        )
+    }
+    fn event_created_child(opcode: u16, qhandle: &QueueHandle<Self>) -> Arc<dyn ObjectData> {
+        <SeatState as Dispatch<WlSeat, SeatData, Self>>::event_created_child(opcode, qhandle)
+    }
+}
 
-delegate_keyboard!(Wgpu);
-delegate_pointer!(Wgpu);
+impl<S: Viewable + 'static> Dispatch<WlKeyboard, KeyboardData<Renderer<S>>> for Renderer<S> {
+    fn event(
+        state: &mut Self,
+        proxy: &WlKeyboard,
+        event: <WlKeyboard as Proxy>::Event,
+        data: &KeyboardData<Renderer<S>>,
+        conn: &Connection,
+        qhandle: &QueueHandle<Self>,
+    ) {
+        <SeatState as Dispatch<WlKeyboard, KeyboardData<Renderer<S>>, Self>>::event(
+            state, proxy, event, data, conn, qhandle,
+        )
+    }
+    fn event_created_child(opcode: u16, qhandle: &QueueHandle<Self>) -> Arc<dyn ObjectData> {
+        <SeatState as Dispatch<WlKeyboard, KeyboardData<Renderer<S>>, Self>>::event_created_child(
+            opcode, qhandle,
+        )
+    }
+}
+impl<S: Viewable + 'static> Dispatch<WpCursorShapeManagerV1, GlobalData> for Renderer<S> {
+    fn event(
+        state: &mut Self,
+        proxy: &WpCursorShapeManagerV1,
+        event: <WpCursorShapeManagerV1 as Proxy>::Event,
+        data: &GlobalData,
+        conn: &Connection,
+        qhandle: &QueueHandle<Self>,
+    ) {
+        <CursorShapeManager as Dispatch<WpCursorShapeManagerV1, GlobalData, Self>>::event(
+            state, proxy, event, data, conn, qhandle,
+        )
+    }
+    fn event_created_child(opcode: u16, qhandle: &QueueHandle<Self>) -> Arc<dyn ObjectData> {
+        <CursorShapeManager as Dispatch<WpCursorShapeManagerV1,GlobalData,Self>>::event_created_child(opcode,qhandle)
+    }
+}
+impl<S: Viewable + 'static> Dispatch<WpCursorShapeDeviceV1, GlobalData> for Renderer<S> {
+    fn event(
+        state: &mut Self,
+        proxy: &WpCursorShapeDeviceV1,
+        event: <WpCursorShapeDeviceV1 as Proxy>::Event,
+        data: &GlobalData,
+        conn: &Connection,
+        qhandle: &QueueHandle<Self>,
+    ) {
+        <CursorShapeManager as Dispatch<WpCursorShapeDeviceV1, GlobalData, Self>>::event(
+            state, proxy, event, data, conn, qhandle,
+        )
+    }
+    fn event_created_child(opcode: u16, qhandle: &QueueHandle<Self>) -> Arc<dyn ObjectData> {
+        <CursorShapeManager as Dispatch<WpCursorShapeDeviceV1,GlobalData,Self>>::event_created_child(opcode,qhandle)
+    }
+}
+impl<S: Viewable + 'static> Dispatch<WlPointer, PointerData> for Renderer<S> {
+    fn event(
+        state: &mut Self,
+        proxy: &WlPointer,
+        event: <WlPointer as Proxy>::Event,
+        data: &PointerData,
+        conn: &Connection,
+        qhandle: &QueueHandle<Self>,
+    ) {
+        <SeatState as Dispatch<WlPointer, PointerData, Self>>::event(
+            state, proxy, event, data, conn, qhandle,
+        )
+    }
+    fn event_created_child(opcode: u16, qhandle: &QueueHandle<Self>) -> Arc<dyn ObjectData> {
+        <SeatState as Dispatch<WlPointer, PointerData, Self>>::event_created_child(opcode, qhandle)
+    }
+}
 
-delegate_layer!(Wgpu);
+impl<S: Viewable + 'static> Dispatch<ZwlrLayerShellV1, GlobalData> for Renderer<S> {
+    fn event(
+        state: &mut Self,
+        proxy: &ZwlrLayerShellV1,
+        event: <ZwlrLayerShellV1 as Proxy>::Event,
+        data: &GlobalData,
+        conn: &Connection,
+        qhandle: &QueueHandle<Self>,
+    ) {
+        <LayerShell as Dispatch<ZwlrLayerShellV1, GlobalData, Self>>::event(
+            state, proxy, event, data, conn, qhandle,
+        )
+    }
+    fn event_created_child(opcode: u16, qhandle: &QueueHandle<Self>) -> Arc<dyn ObjectData> {
+        <LayerShell as Dispatch<ZwlrLayerShellV1, GlobalData, Self>>::event_created_child(
+            opcode, qhandle,
+        )
+    }
+}
+impl<S: Viewable + 'static> Dispatch<ZwlrLayerSurfaceV1, LayerSurfaceData> for Renderer<S> {
+    fn event(
+        state: &mut Self,
+        proxy: &ZwlrLayerSurfaceV1,
+        event: <ZwlrLayerSurfaceV1 as Proxy>::Event,
+        data: &LayerSurfaceData,
+        conn: &Connection,
+        qhandle: &QueueHandle<Self>,
+    ) {
+        <LayerShell as Dispatch<ZwlrLayerSurfaceV1, LayerSurfaceData, Self>>::event(
+            state, proxy, event, data, conn, qhandle,
+        )
+    }
+    fn event_created_child(opcode: u16, qhandle: &QueueHandle<Self>) -> Arc<dyn ObjectData> {
+        <LayerShell as Dispatch<ZwlrLayerSurfaceV1, LayerSurfaceData, Self>>::event_created_child(
+            opcode, qhandle,
+        )
+    }
+}
 
-delegate_registry!(Wgpu);
+impl<S: Viewable + 'static> Dispatch<WlRegistry, GlobalListContents> for Renderer<S> {
+    fn event(
+        state: &mut Self,
+        proxy: &WlRegistry,
+        event: <WlRegistry as Proxy>::Event,
+        data: &GlobalListContents,
+        conn: &Connection,
+        qhandle: &QueueHandle<Self>,
+    ) {
+        <RegistryState as Dispatch<WlRegistry, GlobalListContents, Self>>::event(
+            state, proxy, event, data, conn, qhandle,
+        )
+    }
+    fn event_created_child(opcode: u16, qhandle: &QueueHandle<Self>) -> Arc<dyn ObjectData> {
+        <RegistryState as Dispatch<WlRegistry, GlobalListContents, Self>>::event_created_child(
+            opcode, qhandle,
+        )
+    }
+}
 
-impl ProvidesRegistryState for Wgpu {
+impl<S: Viewable + 'static> ProvidesRegistryState for Renderer<S> {
     fn registry(&mut self) -> &mut RegistryState {
         &mut self.registry_state
     }
 
-    registry_handlers![OutputState, SeatState];
+        fn runtime_add_global(
+            &mut self,
+            conn: &Connection,
+            qh: &QueueHandle<Self>,
+            name: u32,
+            interface: &str,
+            version: u32,
+        ) {
+                <OutputState as RegistryHandler<Self>>::new_global(self, conn, qh, name, interface, version);
+                <SeatState as RegistryHandler<Self>>::new_global(self, conn, qh, name, interface, version);
+        }
+
+        fn runtime_remove_global(
+            &mut self,
+            conn: &Connection,
+            qh: &QueueHandle<Self>,
+            name: u32,
+            interface: &str,
+        ) {
+                <OutputState as RegistryHandler<Self>>::remove_global(self, conn, qh, name, interface);
+                <SeatState as RegistryHandler<Self>>::remove_global(self, conn, qh, name, interface);
+        }
 }

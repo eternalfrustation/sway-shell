@@ -3,7 +3,7 @@ use wayland_client::Proxy;
 use futures::StreamExt;
 use mpd::Status;
 
-use crate::sway::Workspace;
+use crate::{sway::Workspace, viewable::Viewable};
 
 #[derive(Debug, Default)]
 pub struct State {
@@ -68,7 +68,8 @@ impl State {
         }
     }
 
-    fn init() -> Self {
-        todo!()
-    }
+}
+
+impl Viewable for State {
+
 }
