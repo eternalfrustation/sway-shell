@@ -4,6 +4,7 @@ use wayland_client::Proxy;
 
 use futures::StreamExt;
 use mpd::Status;
+use wgpu::IndexFormat;
 
 use crate::{layer::Renderer, sway::Workspace, viewable::Viewable};
 
@@ -93,7 +94,7 @@ impl Viewable<Renderer<Self>> for State {
                     view: &texture_view,
                     resolve_target: None,
                     ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(wgpu::Color::GREEN),
+                        load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
                         store: wgpu::StoreOp::Store,
                     },
                 })],
@@ -102,7 +103,9 @@ impl Viewable<Renderer<Self>> for State {
                 occlusion_query_set: None,
             });
             renderpass.set_pipeline(&renderer.render_pipeline);
-            renderpass.draw(0..3, 0..1);
+            renderpass.set_vertex_buffer(0, renderer.square_vb.slice(..));
+            renderpass.set_index_buffer(renderer.square_ib.slice(..), IndexFormat::Uint16);
+            renderpass.draw_indexed(0..renderer.square_num_vertices, 0, 0..1);
         }
 
         // Submit the command in the queue to execute

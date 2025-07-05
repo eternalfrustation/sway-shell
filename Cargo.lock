@@ -1257,6 +1257,7 @@ dependencies = [
 name = "sway-shell"
 version = "0.1.0"
 dependencies = [
+ "bytemuck",
  "futures",
  "log",
  "mpd",

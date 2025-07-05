@@ -17,7 +17,7 @@ use wayland_client::{
         wl_surface,
     },
 };
-use wgpu::RenderPipeline;
+use wgpu::{Buffer, RenderPipeline, util::DeviceExt};
 
 use futures::StreamExt;
 use smithay_client_toolkit::{
@@ -58,6 +58,34 @@ use smithay_client_toolkit::{
 
 use crate::{state::State, viewable::Viewable};
 
+#[repr(C)]
+#[derive(Copy, Clone, Debug, bytemuck::Pod, bytemuck::Zeroable)]
+struct Vertex {
+    position: [f32; 2],
+    tex_coords: [f32; 2],
+}
+
+impl Vertex {
+    fn desc() -> wgpu::VertexBufferLayout<'static> {
+        wgpu::VertexBufferLayout {
+            array_stride: std::mem::size_of::<Vertex>() as wgpu::BufferAddress,
+            step_mode: wgpu::VertexStepMode::Vertex,
+            attributes: &[
+                wgpu::VertexAttribute {
+                    offset: 0,
+                    shader_location: 0,
+                    format: wgpu::VertexFormat::Float32x2,
+                },
+                wgpu::VertexAttribute {
+                    offset: std::mem::size_of::<[f32; 2]>() as wgpu::BufferAddress,
+                    shader_location: 1,
+                    format: wgpu::VertexFormat::Float32x2,
+                },
+            ],
+        }
+    }
+}
+
 #[derive(Debug)]
 pub struct Renderer<S> {
     pub state: Arc<S>,
@@ -79,7 +107,31 @@ pub struct Renderer<S> {
     pub keyboard: Option<WlKeyboard>,
     pub pointer: Option<WlPointer>,
     pub render_pipeline: RenderPipeline,
+    pub square_vb: Buffer,
+    pub square_ib: Buffer,
+    pub square_num_vertices: u32,
 }
+
+const SQUARE: &[Vertex] = &[
+    Vertex {
+        position: [-1., 1.],
+        tex_coords: [0., 0.],
+    },
+    Vertex {
+        position: [-1., -1.],
+        tex_coords: [0., 1.],
+    },
+    Vertex {
+        position: [1., -1.],
+        tex_coords: [1., 1.],
+    },
+    Vertex {
+        position: [1., 1.],
+        tex_coords: [1., 0.],
+    },
+];
+
+const SQUARE_INDICES: &[u16] = &[0, 1, 3, 3, 1, 2];
 
 impl<S: Viewable<Self> + 'static> Renderer<S>
 where
@@ -171,7 +223,7 @@ where
             vertex: wgpu::VertexState {
                 module: &shader,
                 entry_point: Some("vs_main"),
-                buffers: &[],
+                buffers: &[Vertex::desc()],
                 compilation_options: Default::default(),
             },
             fragment: Some(wgpu::FragmentState {
@@ -186,8 +238,21 @@ where
             multiview: None,
             cache: None,
         });
+        let square_vb = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("Square Vertex Buffer"),
+            contents: bytemuck::cast_slice(SQUARE),
+            usage: wgpu::BufferUsages::VERTEX,
+        });
+        let square_ib = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("Square Index Buffer"),
+            contents: bytemuck::cast_slice(SQUARE_INDICES),
+            usage: wgpu::BufferUsages::INDEX,
+        });
         (
             Renderer {
+                square_vb,
+                square_ib,
+                square_num_vertices: SQUARE_INDICES.len() as u32,
                 state,
                 wayland_conn,
                 compositor,
@@ -195,7 +260,6 @@ where
                 registry_state: RegistryState::new(&globals),
                 seat_state: SeatState::new(&globals, &qh),
                 output_state: OutputState::new(&globals, &qh),
-
                 exit: false,
                 width: 256 * 4,
                 height: HEIGHT,
