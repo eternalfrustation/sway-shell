@@ -2,6 +2,13 @@ use raw_window_handle::{
     RawDisplayHandle, RawWindowHandle, WaylandDisplayHandle, WaylandWindowHandle,
 };
 use std::{borrow::Cow, ptr::NonNull, sync::Arc};
+
+use tokio::{
+    runtime::Runtime,
+    sync::{RwLock, mpsc::Sender},
+    task::block_in_place,
+};
+
 use wayland_client::{
     Connection, Dispatch, DispatchError, EventQueue, Proxy, QueueHandle,
     backend::ObjectData,
@@ -19,7 +26,6 @@ use wayland_client::{
 };
 use wgpu::{Buffer, RenderPipeline, util::DeviceExt};
 
-use futures::StreamExt;
 use smithay_client_toolkit::{
     compositor::{CompositorHandler, CompositorState, SurfaceData},
     globals::GlobalData,
@@ -56,76 +62,17 @@ use smithay_client_toolkit::{
     },
 };
 
-use crate::{state::State, viewable::Viewable};
+use crate::state::State;
 
-#[repr(C)]
-#[derive(Copy, Clone, Debug, bytemuck::Pod, bytemuck::Zeroable)]
-struct Vertex {
-    position: [f32; 2],
-    tex_coords: [f32; 2],
-}
-
-impl Vertex {
-    fn desc() -> wgpu::VertexBufferLayout<'static> {
-        wgpu::VertexBufferLayout {
-            array_stride: std::mem::size_of::<Vertex>() as wgpu::BufferAddress,
-            step_mode: wgpu::VertexStepMode::Vertex,
-            attributes: &[
-                wgpu::VertexAttribute {
-                    offset: 0,
-                    shader_location: 0,
-                    format: wgpu::VertexFormat::Float32x2,
-                },
-                wgpu::VertexAttribute {
-                    offset: std::mem::size_of::<[f32; 2]>() as wgpu::BufferAddress,
-                    shader_location: 1,
-                    format: wgpu::VertexFormat::Float32x2,
-                },
-            ],
-        }
-    }
-}
-
-#[repr(C)]
-#[derive(Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
-pub struct Instance {
-    pub position: [f32; 2],
-    pub scale: [f32; 2],
-}
-
-impl Instance {
-    fn desc() -> wgpu::VertexBufferLayout<'static> {
-        use std::mem;
-        wgpu::VertexBufferLayout {
-            array_stride: mem::size_of::<Instance>() as wgpu::BufferAddress,
-            // We need to switch from using a step mode of Vertex to Instance
-            // This means that our shaders will only change to use the next
-            // instance when the shader starts processing a new instance
-            step_mode: wgpu::VertexStepMode::Instance,
-            attributes: &[
-                // A mat4 takes up 4 vertex slots as it is technically 4 vec4s. We need to define a slot
-                // for each vec4. We'll have to reassemble the mat4 in the shader.
-                wgpu::VertexAttribute {
-                    offset: 0,
-                    // While our vertex shader only uses locations 0, and 1 now, in later tutorials, we'll
-                    // be using 2, 3, and 4, for Vertex. We'll start at slot 5, not conflict with them later
-                    shader_location: 5,
-                    format: wgpu::VertexFormat::Float32x2,
-                },
-                wgpu::VertexAttribute {
-                    offset: mem::size_of::<[f32; 2]>() as wgpu::BufferAddress,
-                    shader_location: 6,
-                    format: wgpu::VertexFormat::Float32x2,
-                },
-            ],
-        }
-    }
+pub enum DisplayMessage {
+    CanDraw,
+    Configure { width: u32, height: u32 },
 }
 
 #[derive(Debug)]
-pub struct Renderer<S> {
-    pub state: Arc<S>,
+pub struct Display {
     pub wayland_conn: Connection,
+    pub wayland_surface: WlSurface,
     pub globals: GlobalList,
     pub registry_state: RegistryState,
     pub seat_state: SeatState,
@@ -136,45 +83,13 @@ pub struct Renderer<S> {
     pub width: u32,
     pub height: u32,
     pub layer: LayerSurface,
-    pub adapter: wgpu::Adapter,
-    pub device: wgpu::Device,
-    pub queue: wgpu::Queue,
-    pub surface: wgpu::Surface<'static>,
     pub keyboard: Option<WlKeyboard>,
     pub pointer: Option<WlPointer>,
-    pub render_pipeline: RenderPipeline,
-    pub square_vb: Buffer,
-    pub square_ib: Buffer,
-    pub square_num_vertices: u32,
+    pub sender: Sender<DisplayMessage>,
 }
 
-const SQUARE: &[Vertex] = &[
-    Vertex {
-        position: [-1., 1.],
-        tex_coords: [0., 0.],
-    },
-    Vertex {
-        position: [-1., -1.],
-        tex_coords: [0., 1.],
-    },
-    Vertex {
-        position: [1., -1.],
-        tex_coords: [1., 1.],
-    },
-    Vertex {
-        position: [1., 1.],
-        tex_coords: [1., 0.],
-    },
-];
-
-const SQUARE_INDICES: &[u16] = &[0, 1, 3, 3, 1, 2];
-
-impl<S: Viewable<Self> + 'static> Renderer<S>
-where
-    Renderer<S>: CompositorHandler,
-{
-    pub async fn new(state: Arc<S>) -> (Self, EventQueue<Self>) {
-        const HEIGHT: u32 = 20;
+impl Display {
+    pub fn new(height: u32, sender: Sender<DisplayMessage>) -> (Self, EventQueue<Self>) {
         let wayland_conn =
             Connection::connect_to_env().expect("To be able to connect to the compositor");
         let (globals, event_queue) = registry_queue_init(&wayland_conn)
@@ -188,24 +103,11 @@ where
 
         let compositor = CompositorState::bind(&globals, &qh)
             .expect("wl_compositor is not available, whatever that means");
-        let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor {
-            backends: wgpu::Backends::all(),
-            ..Default::default()
-        });
-        // Create the raw window handle for the surface.
-        let raw_display_handle = RawDisplayHandle::Wayland(WaylandDisplayHandle::new(
-            NonNull::new(wayland_conn.backend().display_ptr() as *mut _)
-                .expect("Wayland display pointer to be not null"),
-        ));
 
-        let raw_window_handle = RawWindowHandle::Wayland(WaylandWindowHandle::new(
-            NonNull::new(wayland_surface.id().as_ptr() as *mut _)
-                .expect("Wayland surface pointer to be not null"),
-        ));
-
+        // NOTE: This surface cloning might not be fine
         let layer = layer_shell.create_layer_surface(
             &qh,
-            wayland_surface,
+            wayland_surface.clone(),
             Layer::Top,
             Some("sway-shell"),
             None,
@@ -214,82 +116,12 @@ where
         layer.set_keyboard_interactivity(KeyboardInteractivity::OnDemand);
 
         layer.set_anchor(Anchor::TOP.union(Anchor::LEFT).union(Anchor::RIGHT));
-        layer.set_size(0, HEIGHT);
-        let surface = unsafe {
-            instance
-                .create_surface_unsafe(wgpu::SurfaceTargetUnsafe::RawHandle {
-                    raw_display_handle,
-                    raw_window_handle,
-                })
-                .unwrap()
-        };
+        layer.set_size(0, height);
 
-        // Pick a supported adapter
-        let adapter = instance
-            .request_adapter(&wgpu::RequestAdapterOptions {
-                compatible_surface: Some(&surface),
-                ..Default::default()
-            })
-            .await
-            .expect("Failed to find suitable adapter");
-
-        let (device, queue) = adapter
-            .request_device(&Default::default())
-            .await
-            .expect("Failed to request device");
-
-        // Load the shaders from disk
-        let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: None,
-            source: wgpu::ShaderSource::Wgsl(Cow::Borrowed(include_str!("shader.wgsl"))),
-        });
-
-        let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-            label: None,
-            bind_group_layouts: &[],
-            push_constant_ranges: &[],
-        });
-
-        let swapchain_capabilities = surface.get_capabilities(&adapter);
-        let swapchain_format = swapchain_capabilities.formats[0];
-
-        let render_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: None,
-            layout: Some(&pipeline_layout),
-            vertex: wgpu::VertexState {
-                module: &shader,
-                entry_point: Some("vs_main"),
-                buffers: &[Vertex::desc(), Instance::desc()],
-                compilation_options: Default::default(),
-            },
-            fragment: Some(wgpu::FragmentState {
-                module: &shader,
-                entry_point: Some("fs_main"),
-                compilation_options: Default::default(),
-                targets: &[Some(swapchain_format.into())],
-            }),
-            primitive: wgpu::PrimitiveState::default(),
-            depth_stencil: None,
-            multisample: wgpu::MultisampleState::default(),
-            multiview: None,
-            cache: None,
-        });
-        let square_vb = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("Square Vertex Buffer"),
-            contents: bytemuck::cast_slice(SQUARE),
-            usage: wgpu::BufferUsages::VERTEX,
-        });
-        let square_ib = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("Square Index Buffer"),
-            contents: bytemuck::cast_slice(SQUARE_INDICES),
-            usage: wgpu::BufferUsages::INDEX,
-        });
         (
-            Renderer {
-                square_vb,
-                square_ib,
-                square_num_vertices: SQUARE_INDICES.len() as u32,
-                state,
+            Display {
+                sender,
+                wayland_surface,
                 wayland_conn,
                 compositor,
                 layer_shell,
@@ -298,23 +130,18 @@ where
                 output_state: OutputState::new(&globals, &qh),
                 exit: false,
                 width: 256 * 4,
-                height: HEIGHT,
+                height,
                 layer,
-                device,
-                surface,
-                adapter,
-                queue,
                 keyboard: None,
                 pointer: None,
                 globals,
-                render_pipeline,
             },
             event_queue,
         )
     }
 
     /// Actual rendering happens in CompositorHandler::frame
-    pub fn start_event_loop(
+    pub async fn run_event_loop(
         mut self,
         mut event_queue: EventQueue<Self>,
     ) -> Result<(), EventLoopError> {
@@ -327,8 +154,6 @@ where
                 break;
             }
         }
-        drop(self.surface);
-        drop(self.layer);
         Ok(())
     }
 }
@@ -344,139 +169,94 @@ impl From<DispatchError> for EventLoopError {
     }
 }
 
-impl<S> LayerShellHandler for Renderer<S> {
-    fn closed(&mut self, conn: &Connection, qh: &QueueHandle<Self>, layer: &LayerSurface) {
+impl LayerShellHandler for Display {
+    fn closed(&mut self, _conn: &Connection, _qh: &QueueHandle<Self>, _layer: &LayerSurface) {
         self.exit = true;
     }
 
     fn configure(
         &mut self,
-        conn: &Connection,
-        qh: &QueueHandle<Self>,
+        _conn: &Connection,
+        _qh: &QueueHandle<Self>,
         layer: &LayerSurface,
         configure: smithay_client_toolkit::shell::wlr_layer::LayerSurfaceConfigure,
-        serial: u32,
+        _serial: u32,
     ) {
         let (new_width, new_height) = configure.new_size;
         self.width = new_width;
         self.height = new_height;
+        block_in_place(|| {
+            self.sender.blocking_send(DisplayMessage::Configure {
+                width: self.width,
+                height: self.height,
+            })
+        })
+        .expect("To be able to send a display message when configuration is requested");
         layer.set_size(self.width, self.height);
-
-        let adapter = &self.adapter;
-        let surface = &self.surface;
-        let device = &self.device;
-        let queue = &self.queue;
-
-        let cap = surface.get_capabilities(&adapter);
-        let surface_config = wgpu::SurfaceConfiguration {
-            usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
-            format: cap.formats[0],
-            view_formats: vec![cap.formats[0]],
-            alpha_mode: wgpu::CompositeAlphaMode::Auto,
-            width: self.width,
-            height: self.height,
-            desired_maximum_frame_latency: 1,
-            // Wayland is inherently a mailbox system.
-            present_mode: wgpu::PresentMode::Mailbox,
-        };
-
-        surface.configure(&self.device, &surface_config);
-
-        // We don't plan to render much in this example, just clear the surface.
-        let surface_texture = surface
-            .get_current_texture()
-            .expect("failed to acquire next swapchain texture");
-        let texture_view = surface_texture
-            .texture
-            .create_view(&wgpu::TextureViewDescriptor::default());
-
-        let mut encoder = device.create_command_encoder(&Default::default());
-        {
-            let _renderpass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: None,
-                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: &texture_view,
-                    resolve_target: None,
-                    ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(wgpu::Color::RED),
-                        store: wgpu::StoreOp::Store,
-                    },
-                })],
-                depth_stencil_attachment: None,
-                timestamp_writes: None,
-                occlusion_query_set: None,
-            });
-        }
-
-        // Submit the command in the queue to execute
-        queue.submit(Some(encoder.finish()));
-        surface_texture.present();
-        layer.commit();
     }
 }
 
-impl CompositorHandler for Renderer<State> {
+impl CompositorHandler for Display {
     fn scale_factor_changed(
         &mut self,
-        conn: &Connection,
-        qh: &QueueHandle<Self>,
-        surface: &wayland_client::protocol::wl_surface::WlSurface,
-        new_factor: i32,
+        _conn: &Connection,
+        _qh: &QueueHandle<Self>,
+        _surface: &wayland_client::protocol::wl_surface::WlSurface,
+        _new_factor: i32,
     ) {
         log::info!("Wgpu::scale_factor_changed");
     }
 
     fn transform_changed(
         &mut self,
-        conn: &Connection,
-        qh: &QueueHandle<Self>,
-        surface: &wayland_client::protocol::wl_surface::WlSurface,
-        new_transform: wayland_client::protocol::wl_output::Transform,
+        _conn: &Connection,
+        _qh: &QueueHandle<Self>,
+        _surface: &wayland_client::protocol::wl_surface::WlSurface,
+        _new_transform: wayland_client::protocol::wl_output::Transform,
     ) {
         log::info!("Wgpu::transform_changed");
     }
 
     fn frame(
         &mut self,
-        conn: &Connection,
-        qh: &QueueHandle<Self>,
-        surface: &wayland_client::protocol::wl_surface::WlSurface,
-        time: u32,
+        _conn: &Connection,
+        _qh: &QueueHandle<Self>,
+        _surface: &wayland_client::protocol::wl_surface::WlSurface,
+        _time: u32,
     ) {
         log::info!("Wgpu::frame");
-        State::draw_frame(self.state.clone(), self);
     }
 
     fn surface_enter(
         &mut self,
-        conn: &Connection,
-        qh: &QueueHandle<Self>,
-        surface: &wayland_client::protocol::wl_surface::WlSurface,
-        output: &wayland_client::protocol::wl_output::WlOutput,
+        _conn: &Connection,
+        _qh: &QueueHandle<Self>,
+        _surface: &wayland_client::protocol::wl_surface::WlSurface,
+        _output: &wayland_client::protocol::wl_output::WlOutput,
     ) {
         log::info!("Wgpu::surface_enter");
     }
 
     fn surface_leave(
         &mut self,
-        conn: &Connection,
-        qh: &QueueHandle<Self>,
-        surface: &wayland_client::protocol::wl_surface::WlSurface,
-        output: &wayland_client::protocol::wl_output::WlOutput,
+        _conn: &Connection,
+        _qh: &QueueHandle<Self>,
+        _surface: &wayland_client::protocol::wl_surface::WlSurface,
+        _output: &wayland_client::protocol::wl_output::WlOutput,
     ) {
         log::info!("Wgpu::surface_leave");
     }
 }
 
-impl<S: Viewable<Self> + 'static> OutputHandler for Renderer<S> {
+impl OutputHandler for Display {
     fn output_state(&mut self) -> &mut OutputState {
         &mut self.output_state
     }
 
     fn new_output(
         &mut self,
-        conn: &Connection,
-        qh: &QueueHandle<Self>,
+        _conn: &Connection,
+        _qh: &QueueHandle<Self>,
         output: wayland_client::protocol::wl_output::WlOutput,
     ) {
         let output_info = self
@@ -487,49 +267,52 @@ impl<S: Viewable<Self> + 'static> OutputHandler for Renderer<S> {
             self.width = width as u32;
             self.layer.set_size(self.width, self.height);
             self.layer.set_exclusive_zone(self.height as i32);
+            block_in_place(|| {
+                self.sender.blocking_send(DisplayMessage::Configure {
+                    width: self.width,
+                    height: self.height,
+                })
+            })
+            .expect("To be able to send a display message when new output is created");
         }
-        self.layer.commit();
     }
 
     fn update_output(
         &mut self,
-        conn: &Connection,
-        qh: &QueueHandle<Self>,
-        output: wayland_client::protocol::wl_output::WlOutput,
+        _conn: &Connection,
+        _qh: &QueueHandle<Self>,
+        _output: wayland_client::protocol::wl_output::WlOutput,
     ) {
         log::info!("Wgpu::update_output");
     }
 
     fn output_destroyed(
         &mut self,
-        conn: &Connection,
-        qh: &QueueHandle<Self>,
-        output: wayland_client::protocol::wl_output::WlOutput,
+        _conn: &Connection,
+        _qh: &QueueHandle<Self>,
+        _output: wayland_client::protocol::wl_output::WlOutput,
     ) {
         log::info!("Wgpu::output_destroyed");
     }
 }
 
-impl<S: Viewable<Self> + 'static> SeatHandler for Renderer<S>
-where
-    Renderer<S>: CompositorHandler,
-{
+impl SeatHandler for Display {
     fn seat_state(&mut self) -> &mut SeatState {
         &mut self.seat_state
     }
 
     fn new_seat(
         &mut self,
-        conn: &Connection,
-        qh: &QueueHandle<Self>,
-        seat: wayland_client::protocol::wl_seat::WlSeat,
+        _conn: &Connection,
+        _qh: &QueueHandle<Self>,
+        _seat: wayland_client::protocol::wl_seat::WlSeat,
     ) {
         log::info!("Wgpu::new_seat");
     }
 
     fn new_capability(
         &mut self,
-        conn: &Connection,
+        _conn: &Connection,
         qh: &QueueHandle<Self>,
         seat: wayland_client::protocol::wl_seat::WlSeat,
         capability: smithay_client_toolkit::seat::Capability,
@@ -557,28 +340,25 @@ where
 
     fn remove_capability(
         &mut self,
-        conn: &Connection,
-        qh: &QueueHandle<Self>,
-        seat: wayland_client::protocol::wl_seat::WlSeat,
-        capability: smithay_client_toolkit::seat::Capability,
+        _conn: &Connection,
+        _qh: &QueueHandle<Self>,
+        _seat: wayland_client::protocol::wl_seat::WlSeat,
+        _capability: smithay_client_toolkit::seat::Capability,
     ) {
         log::info!("Wgpu::remove_capability");
     }
 
     fn remove_seat(
         &mut self,
-        conn: &Connection,
-        qh: &QueueHandle<Self>,
-        seat: wayland_client::protocol::wl_seat::WlSeat,
+        _conn: &Connection,
+        _qh: &QueueHandle<Self>,
+        _seat: wayland_client::protocol::wl_seat::WlSeat,
     ) {
         log::info!("Wgpu::remove_seat");
     }
 }
 
-impl<S: Viewable<Self> + 'static> PointerHandler for Renderer<S>
-where
-    Renderer<S>: CompositorHandler,
-{
+impl PointerHandler for Display {
     fn pointer_frame(
         &mut self,
         _conn: &Connection,
@@ -621,7 +401,7 @@ where
     }
 }
 
-impl<S: Viewable<Self> + 'static> KeyboardHandler for Renderer<S> {
+impl KeyboardHandler for Display {
     fn enter(
         &mut self,
         _: &Connection,
@@ -690,10 +470,7 @@ impl<S: Viewable<Self> + 'static> KeyboardHandler for Renderer<S> {
 }
 
 // All the dispatch handler macros, inlined
-impl<S: Viewable<Self> + 'static> Dispatch<WlCompositor, GlobalData> for Renderer<S>
-where
-    Renderer<S>: CompositorHandler,
-{
+impl Dispatch<WlCompositor, GlobalData> for Display {
     fn event(
         state: &mut Self,
         proxy: &WlCompositor,
@@ -712,10 +489,7 @@ where
         )
     }
 }
-impl<S: Viewable<Self> + 'static> Dispatch<WlCallback, WlSurface> for Renderer<S>
-where
-    Renderer<S>: CompositorHandler,
-{
+impl Dispatch<WlCallback, WlSurface> for Display {
     fn event(
         state: &mut Self,
         proxy: &WlCallback,
@@ -734,10 +508,7 @@ where
         )
     }
 }
-impl<S: Viewable<Self> + 'static> Dispatch<WlSurface, SurfaceData> for Renderer<S>
-where
-    Renderer<S>: CompositorHandler,
-{
+impl Dispatch<WlSurface, SurfaceData> for Display {
     fn event(
         state: &mut Self,
         proxy: &WlSurface,
@@ -756,7 +527,7 @@ where
         )
     }
 }
-impl<S: Viewable<Self> + 'static> Dispatch<WlOutput, OutputData> for Renderer<S> {
+impl Dispatch<WlOutput, OutputData> for Display {
     fn event(
         state: &mut Self,
         proxy: &WlOutput,
@@ -773,7 +544,7 @@ impl<S: Viewable<Self> + 'static> Dispatch<WlOutput, OutputData> for Renderer<S>
         <OutputState as Dispatch<WlOutput, OutputData, Self>>::event_created_child(opcode, qhandle)
     }
 }
-impl<S: Viewable<Self> + 'static> Dispatch<ZxdgOutputManagerV1, GlobalData> for Renderer<S> {
+impl Dispatch<ZxdgOutputManagerV1, GlobalData> for Display {
     fn event(
         state: &mut Self,
         proxy: &ZxdgOutputManagerV1,
@@ -792,7 +563,7 @@ impl<S: Viewable<Self> + 'static> Dispatch<ZxdgOutputManagerV1, GlobalData> for 
         )
     }
 }
-impl<S: Viewable<Self> + 'static> Dispatch<ZxdgOutputV1, OutputData> for Renderer<S> {
+impl Dispatch<ZxdgOutputV1, OutputData> for Display {
     fn event(
         state: &mut Self,
         proxy: &ZxdgOutputV1,
@@ -812,10 +583,7 @@ impl<S: Viewable<Self> + 'static> Dispatch<ZxdgOutputV1, OutputData> for Rendere
     }
 }
 
-impl<S: Viewable<Self> + 'static> Dispatch<WlSeat, SeatData> for Renderer<S>
-where
-    Renderer<S>: CompositorHandler,
-{
+impl Dispatch<WlSeat, SeatData> for Display {
     fn event(
         state: &mut Self,
         proxy: &WlSeat,
@@ -833,26 +601,26 @@ where
     }
 }
 
-impl<S: Viewable<Self> + 'static> Dispatch<WlKeyboard, KeyboardData<Renderer<S>>> for Renderer<S> {
+impl Dispatch<WlKeyboard, KeyboardData<Display>> for Display {
     fn event(
         state: &mut Self,
         proxy: &WlKeyboard,
         event: <WlKeyboard as Proxy>::Event,
-        data: &KeyboardData<Renderer<S>>,
+        data: &KeyboardData<Display>,
         conn: &Connection,
         qhandle: &QueueHandle<Self>,
     ) {
-        <SeatState as Dispatch<WlKeyboard, KeyboardData<Renderer<S>>, Self>>::event(
+        <SeatState as Dispatch<WlKeyboard, KeyboardData<Display>, Self>>::event(
             state, proxy, event, data, conn, qhandle,
         )
     }
     fn event_created_child(opcode: u16, qhandle: &QueueHandle<Self>) -> Arc<dyn ObjectData> {
-        <SeatState as Dispatch<WlKeyboard, KeyboardData<Renderer<S>>, Self>>::event_created_child(
+        <SeatState as Dispatch<WlKeyboard, KeyboardData<Display>, Self>>::event_created_child(
             opcode, qhandle,
         )
     }
 }
-impl<S: Viewable<Self> + 'static> Dispatch<WpCursorShapeManagerV1, GlobalData> for Renderer<S> {
+impl Dispatch<WpCursorShapeManagerV1, GlobalData> for Display {
     fn event(
         state: &mut Self,
         proxy: &WpCursorShapeManagerV1,
@@ -869,7 +637,7 @@ impl<S: Viewable<Self> + 'static> Dispatch<WpCursorShapeManagerV1, GlobalData> f
         <CursorShapeManager as Dispatch<WpCursorShapeManagerV1,GlobalData,Self>>::event_created_child(opcode,qhandle)
     }
 }
-impl<S: Viewable<Self> + 'static> Dispatch<WpCursorShapeDeviceV1, GlobalData> for Renderer<S> {
+impl Dispatch<WpCursorShapeDeviceV1, GlobalData> for Display {
     fn event(
         state: &mut Self,
         proxy: &WpCursorShapeDeviceV1,
@@ -886,10 +654,7 @@ impl<S: Viewable<Self> + 'static> Dispatch<WpCursorShapeDeviceV1, GlobalData> fo
         <CursorShapeManager as Dispatch<WpCursorShapeDeviceV1,GlobalData,Self>>::event_created_child(opcode,qhandle)
     }
 }
-impl<S: Viewable<Self> + 'static> Dispatch<WlPointer, PointerData> for Renderer<S>
-where
-    Renderer<S>: CompositorHandler,
-{
+impl Dispatch<WlPointer, PointerData> for Display {
     fn event(
         state: &mut Self,
         proxy: &WlPointer,
@@ -907,7 +672,7 @@ where
     }
 }
 
-impl<S: Viewable<Self> + 'static> Dispatch<ZwlrLayerShellV1, GlobalData> for Renderer<S> {
+impl Dispatch<ZwlrLayerShellV1, GlobalData> for Display {
     fn event(
         state: &mut Self,
         proxy: &ZwlrLayerShellV1,
@@ -926,7 +691,7 @@ impl<S: Viewable<Self> + 'static> Dispatch<ZwlrLayerShellV1, GlobalData> for Ren
         )
     }
 }
-impl<S: Viewable<Self> + 'static> Dispatch<ZwlrLayerSurfaceV1, LayerSurfaceData> for Renderer<S> {
+impl Dispatch<ZwlrLayerSurfaceV1, LayerSurfaceData> for Display {
     fn event(
         state: &mut Self,
         proxy: &ZwlrLayerSurfaceV1,
@@ -946,10 +711,7 @@ impl<S: Viewable<Self> + 'static> Dispatch<ZwlrLayerSurfaceV1, LayerSurfaceData>
     }
 }
 
-impl<S: Viewable<Self> + 'static> Dispatch<WlRegistry, GlobalListContents> for Renderer<S>
-where
-    Renderer<S>: CompositorHandler,
-{
+impl Dispatch<WlRegistry, GlobalListContents> for Display {
     fn event(
         state: &mut Self,
         proxy: &WlRegistry,
@@ -969,10 +731,7 @@ where
     }
 }
 
-impl<S: Viewable<Self> + 'static> ProvidesRegistryState for Renderer<S>
-where
-    Renderer<S>: CompositorHandler,
-{
+impl ProvidesRegistryState for Display {
     fn registry(&mut self) -> &mut RegistryState {
         &mut self.registry_state
     }

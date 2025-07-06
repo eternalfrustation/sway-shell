@@ -1,19 +1,15 @@
-use std::sync::Arc;
-
-use wayland_client::Proxy;
-
-use futures::StreamExt;
 use mpd::Status;
+use std::sync::Arc;
+use tokio::sync::RwLock;
+use tokio::sync::mpsc::{Receiver, Sender};
+use tokio::task::block_in_place;
 use wgpu::IndexFormat;
 use wgpu::util::DeviceExt;
 
-use crate::{
-    layer::{Instance, Renderer},
-    sway::Workspace,
-    viewable::Viewable,
-};
+use crate::layer::DisplayMessage;
+use crate::sway::Workspace;
 
-#[derive(Debug, Default)]
+#[derive(Debug, Clone)]
 pub struct State {
     pub workspaces: Vec<Workspace>,
     pub mpd_status: Option<Status>,
@@ -39,8 +35,32 @@ pub enum Message {
 }
 
 impl State {
+    pub fn new() -> Self {
+        Self {
+            workspaces: Vec::new(),
+            mpd_status: None,
+        }
+    }
+
+    pub async fn run_event_loop(
+        mut self,
+        mut message_receiver: Receiver<Message>,
+        render_sender: Sender<Self>,
+    ) {
+        render_sender
+            .send(self.clone())
+            .await
+            .expect("To be able to send render requests without drama, when initializing");
+        while let Some(message) = message_receiver.recv().await {
+            self.update(message);
+            render_sender
+                .send(self.clone())
+                .await
+                .expect("To be able to send render requests without drama");
+        }
+    }
+
     fn update(&mut self, message: Message) {
-        log::info!("{message:?}");
         match message {
             Message::WorkspaceAdd(workspace) => self.workspaces.push(workspace),
             Message::WorkspaceDel(id) => {
@@ -74,58 +94,5 @@ impl State {
                 }
             }
         }
-    }
-}
-
-impl Viewable<Renderer<Self>> for State {
-    fn draw_frame(self: Arc<Self>, renderer: &mut Renderer<Self>) {
-        let adapter = &renderer.adapter;
-        let surface = &renderer.surface;
-        let device = &renderer.device;
-        let queue = &renderer.queue;
-        // We don't plan to render much in this example, just clear the surface.
-        let surface_texture = surface
-            .get_current_texture()
-            .expect("failed to acquire next swapchain texture");
-        let texture_view = surface_texture
-            .texture
-            .create_view(&wgpu::TextureViewDescriptor::default());
-
-        let instance_data = [Instance {
-            position: [0., 0.],
-            scale: [0.1, 0.8],
-        }];
-        let instance_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("Instance Buffer"),
-            contents: bytemuck::cast_slice(&instance_data),
-            usage: wgpu::BufferUsages::VERTEX,
-        });
-
-        let mut encoder = device.create_command_encoder(&Default::default());
-        {
-            let mut renderpass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: None,
-                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: &texture_view,
-                    resolve_target: None,
-                    ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
-                        store: wgpu::StoreOp::Store,
-                    },
-                })],
-                depth_stencil_attachment: None,
-                timestamp_writes: None,
-                occlusion_query_set: None,
-            });
-            renderpass.set_pipeline(&renderer.render_pipeline);
-            renderpass.set_vertex_buffer(0, renderer.square_vb.slice(..));
-            renderpass.set_vertex_buffer(1, instance_buffer.slice(..));
-            renderpass.set_index_buffer(renderer.square_ib.slice(..), IndexFormat::Uint16);
-            renderpass.draw_indexed(0..renderer.square_num_vertices, 0, 0..(instance_data.len() as u32));
-        }
-
-        // Submit the command in the queue to execute
-        queue.submit(Some(encoder.finish()));
-        surface_texture.present();
     }
 }

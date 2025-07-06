@@ -1,3 +1,10 @@
+struct GlobalTransformUniform {
+    scale: vec2<f32>,
+};
+
+@group(0) @binding(0) // 1.
+var<uniform> global_transform: GlobalTransformUniform;
+
 struct VertexInput {
     @location(0) position: vec2<f32>,
     @location(1) tex_coords: vec2<f32>,
@@ -18,7 +25,7 @@ struct VertexOutput {
 fn vs_main(input: VertexInput, instance: InstanceInput) -> VertexOutput {
     var out: VertexOutput;
     out.tex_coords = input.tex_coords;
-    out.clip_position = vec4<f32>(input.position * instance.scale + instance.position, 0.0, 1.0);
+    out.clip_position = vec4<f32>((input.position * instance.scale + instance.position) * global_transform.scale, 0.0, 1.0);
     return out;
 }
 

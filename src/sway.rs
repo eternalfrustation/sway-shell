@@ -1,15 +1,12 @@
-use wayland_client::Proxy;
+use std::sync::Arc;
 
-use futures::{
-    SinkExt, Stream, StreamExt,
-    channel::mpsc::{self, SendError, Sender},
-    stream,
-};
 use swayipc::{Event, EventType, Node, Rect, WorkspaceChange};
-use tokio::runtime::Runtime;
+use tokio::{
+    runtime::Runtime,
+    sync::mpsc::{Receiver, Sender, channel, error::SendError},
+};
 
 use crate::state::Message;
-
 
 #[derive(Debug)]
 pub enum WorkspaceFromNodeError {
@@ -82,7 +79,7 @@ impl From<swayipc::Workspace> for Workspace {
 #[derive(Debug)]
 enum SwayError {
     ConnectionError(swayipc::Error),
-    ChannelError(SendError),
+    ChannelError(SendError<Message>),
 }
 
 impl From<swayipc::Error> for SwayError {
@@ -91,8 +88,8 @@ impl From<swayipc::Error> for SwayError {
     }
 }
 
-impl From<SendError> for SwayError {
-    fn from(value: SendError) -> Self {
+impl From<SendError<Message>> for SwayError {
+    fn from(value: SendError<Message>) -> Self {
         Self::ChannelError(value)
     }
 }
@@ -209,8 +206,8 @@ async fn sway_generator(mut output: Sender<Message>) -> Result<(), SwayError> {
     Ok(())
 }
 
-fn sway_subscription(rt: Runtime) -> impl Stream<Item = Message> {
-    let (sender, receiver) = mpsc::channel(1);
+pub fn sway_subscription(rt: Arc<Runtime>) -> Receiver<Message> {
+    let (sender, receiver) = channel(1);
     rt.spawn(async move {
         loop {
             log::error!(
@@ -220,8 +217,5 @@ fn sway_subscription(rt: Runtime) -> impl Stream<Item = Message> {
         }
     });
 
-    stream::unfold(receiver, async move |mut receiver| {
-        receiver.next().await.map(|item| (item, receiver))
-    })
+    receiver
 }
-
