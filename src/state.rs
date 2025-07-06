@@ -5,8 +5,13 @@ use wayland_client::Proxy;
 use futures::StreamExt;
 use mpd::Status;
 use wgpu::IndexFormat;
+use wgpu::util::DeviceExt;
 
-use crate::{layer::Renderer, sway::Workspace, viewable::Viewable};
+use crate::{
+    layer::{Instance, Renderer},
+    sway::Workspace,
+    viewable::Viewable,
+};
 
 #[derive(Debug, Default)]
 pub struct State {
@@ -86,6 +91,16 @@ impl Viewable<Renderer<Self>> for State {
             .texture
             .create_view(&wgpu::TextureViewDescriptor::default());
 
+        let instance_data = [Instance {
+            position: [0., 0.],
+            scale: [0.1, 0.8],
+        }];
+        let instance_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("Instance Buffer"),
+            contents: bytemuck::cast_slice(&instance_data),
+            usage: wgpu::BufferUsages::VERTEX,
+        });
+
         let mut encoder = device.create_command_encoder(&Default::default());
         {
             let mut renderpass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
@@ -104,8 +119,9 @@ impl Viewable<Renderer<Self>> for State {
             });
             renderpass.set_pipeline(&renderer.render_pipeline);
             renderpass.set_vertex_buffer(0, renderer.square_vb.slice(..));
+            renderpass.set_vertex_buffer(1, instance_buffer.slice(..));
             renderpass.set_index_buffer(renderer.square_ib.slice(..), IndexFormat::Uint16);
-            renderpass.draw_indexed(0..renderer.square_num_vertices, 0, 0..1);
+            renderpass.draw_indexed(0..renderer.square_num_vertices, 0, 0..(instance_data.len() as u32));
         }
 
         // Submit the command in the queue to execute
