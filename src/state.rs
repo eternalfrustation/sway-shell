@@ -13,6 +13,10 @@ pub struct State {
 pub enum Message {
     WorkspaceAdd(Workspace),
     WorkspaceDel(i64),
+    WorkspaceChangeVisiblity {
+        id: i64,
+        visible: bool,
+    },
     WorkspaceChangeFocus {
         id: i64,
         focus: Vec<i64>,
@@ -46,6 +50,7 @@ impl State {
             .await
             .expect("To be able to send render requests without drama, when initializing");
         while let Some(message) = message_receiver.recv().await {
+            log::info!("{message:?}");
             self.update(message);
             render_sender
                 .send(self.clone())
@@ -71,6 +76,8 @@ impl State {
                 {
                     workspace.focus = focus;
                     workspace.focused = focused;
+                } else {
+                    log::error!("Couldn't find the workspace when changing focus");
                 }
             }
             Message::WorkspaceRename { id, name } => {
@@ -85,6 +92,13 @@ impl State {
                     &mut self.workspaces.iter_mut().filter(|v| v.id == id).next()
                 {
                     workspace.urgent = urgent;
+                }
+            }
+            Message::WorkspaceChangeVisiblity { id, visible } => {
+                if let Some(workspace) =
+                    &mut self.workspaces.iter_mut().filter(|v| v.id == id).next()
+                {
+                    workspace.visible = visible;
                 }
             }
         }

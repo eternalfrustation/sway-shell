@@ -130,26 +130,40 @@ async fn sway_generator(output: Sender<Message>) -> Result<(), SwayError> {
                                 .await?;
                         }
                         WorkspaceChange::Focus => {
-                            if let Some(v) =
-                                workspace_event.old.map(|v| Message::WorkspaceChangeFocus {
-                                    id: v.id,
-                                    focus: v.focus,
-                                    focused: v.focused,
-                                })
-                            {
-                                output.send(v).await?;
-                            }
-                            if let Some(v) =
-                                workspace_event
-                                    .current
-                                    .map(|v| Message::WorkspaceChangeFocus {
-                                        id: v.id,
-                                        focus: v.focus,
-                                        focused: v.focused,
+                            if let Some(workspace) = workspace_event.current {
+                                // lalalala, i can't hear the errors
+                                let _ = output
+                                    .send(Message::WorkspaceChangeFocus {
+                                        id: workspace.id,
+                                        focus: workspace.focus,
+                                        focused: workspace.focused,
                                     })
-                            {
-                                output.send(v).await?;
-                            }
+                                    .await;
+                                let _ = output
+                                    .send(Message::WorkspaceChangeVisiblity  {
+                                        id: workspace.id,
+                                        visible: true,
+                                    })
+                                    .await;
+                            };
+
+                            if let Some(workspace) = workspace_event.old {
+                                // lalalala, i can't hear the errors
+                                let _ = output
+                                    .send(Message::WorkspaceChangeVisiblity  {
+                                        id: workspace.id,
+                                        visible: false,
+                                    })
+                                    .await;
+                                let _ = output
+                                    .send(Message::WorkspaceChangeFocus {
+                                        id: workspace.id,
+                                        focus: workspace.focus,
+                                        focused: workspace.focused,
+                                    })
+                                    .await;
+
+                            };
                         }
                         WorkspaceChange::Move => {
                             log::info!("Workspace moved, do nothing");
@@ -179,6 +193,7 @@ async fn sway_generator(output: Sender<Message>) -> Result<(), SwayError> {
                                         .expect("Workspace not null when emptying"),
                                 )
                                 .await?;
+                            tokio::task::yield_now().await;
                             output
                                 .send(
                                     workspace_event

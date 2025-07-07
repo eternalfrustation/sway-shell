@@ -71,6 +71,8 @@ impl Vertex {
 pub struct Instance {
     pub position: [f32; 2],
     pub scale: [f32; 2],
+    pub bg: u32,
+    pub fg: u32,
 }
 
 impl Instance {
@@ -96,6 +98,16 @@ impl Instance {
                     offset: mem::size_of::<[f32; 2]>() as wgpu::BufferAddress,
                     shader_location: 6,
                     format: wgpu::VertexFormat::Float32x2,
+                },
+                wgpu::VertexAttribute {
+                    offset: mem::size_of::<[f32; 2]>() as wgpu::BufferAddress * 2,
+                    shader_location: 7,
+                    format: wgpu::VertexFormat::Uint32,
+                },
+                wgpu::VertexAttribute {
+                    offset: mem::size_of::<[f32; 2]>() as wgpu::BufferAddress * 2 + mem::size_of::<u32>() as wgpu::BufferAddress,
+                    shader_location: 8,
+                    format: wgpu::VertexFormat::Uint32,
                 },
             ],
         }
@@ -290,14 +302,16 @@ impl Renderer {
         let texture_view = surface_texture
             .texture
             .create_view(&wgpu::TextureViewDescriptor::default());
-
         let instance_data = state
             .workspaces
             .iter()
             .enumerate()
-            .map(|(i, _w)| Instance {
-                position: [i as f32 * 2., 0.],
+            .inspect(|(i, w)| log::info!("w{i}, focused: {}", w.visible))
+            .map(|(i, w)| Instance {
+                position: [i as f32 * 1., 0.],
                 scale: [1., 1.],
+                fg: if w.visible {0xff0000ff} else {0x0000ffff},
+                bg: 0x00ff00ff,
             })
             .collect::<Vec<Instance>>();
         let instance_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
