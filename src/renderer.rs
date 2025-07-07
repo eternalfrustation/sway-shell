@@ -34,11 +34,15 @@ struct Vertex {
 #[derive(Debug, Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
 struct GlobalTransformUniform {
     scale: [f32; 2],
+    translate: [f32; 2],
 }
 
 impl GlobalTransformUniform {
     fn new() -> Self {
-        Self { scale: [1., 1.] }
+        Self {
+            scale: [1., 1.],
+            translate: [0., 0.],
+        }
     }
 }
 
@@ -117,11 +121,11 @@ pub struct Renderer {
 
 const SQUARE: &[Vertex] = &[
     Vertex {
-        position: [-1., 1.],
+        position: [0., 1.],
         tex_coords: [0., 0.],
     },
     Vertex {
-        position: [-1., -1.],
+        position: [0., -1.],
         tex_coords: [0., 1.],
     },
     Vertex {
@@ -276,7 +280,7 @@ impl Renderer {
 
     fn draw_frame(&self, state: &State) {
         if state.workspaces.len() == 0 {
-            return
+            return;
         }
         let surface = &self.surface;
         let device = &self.device;
@@ -293,7 +297,7 @@ impl Renderer {
             .iter()
             .enumerate()
             .map(|(i, _w)| Instance {
-                position: [i as f32 * 4., 0.],
+                position: [i as f32 * 2., 0.],
                 scale: [1., 1.],
             })
             .collect::<Vec<Instance>>();
@@ -342,7 +346,10 @@ impl Renderer {
         self.queue.write_buffer(
             &self.global_transform_uniform_buffer,
             0,
-            bytemuck::cast_slice(&[self.height as f32 / self.width as f32, 1.]),
+            bytemuck::bytes_of(&GlobalTransformUniform {
+                scale: [2.0 * self.height as f32 / self.width as f32, 1.],
+                translate: [-1., 0.],
+            }),
         );
         let mut config = self
             .surface
@@ -361,7 +368,7 @@ impl Renderer {
     ) {
         let renderer = Arc::new(RwLock::new(self));
         let handle = Handle::current();
-        let (sender, mut receiver) = channel(1);
+        let (sender, mut _receiver) = channel(1);
         let renderer1 = Arc::clone(&renderer);
         let display_handle = handle.spawn(async move {
             while let Some(message) = display_receiver.recv().await {
@@ -385,12 +392,10 @@ impl Renderer {
 
         let render_handle = handle.spawn(async move {
             while let Some(state) = render_receiver.recv().await {
-                println!("Received signal that drawing is requested");
-                if let Some(()) = receiver.recv().await {
-                    println!("Received signal that we can draw");
-                    renderer.read().await.draw_frame(&state);
-                    println!("Drew the frame");
-                }
+                log::info!("Received signal that drawing is requested");
+                log::info!("Ignoring signal that we can draw");
+                renderer.read().await.draw_frame(&state);
+                log::info!("Drew the frame");
             }
         });
         display_handle
