@@ -1,11 +1,7 @@
-use raw_window_handle::{
-    RawDisplayHandle, RawWindowHandle, WaylandDisplayHandle, WaylandWindowHandle,
-};
-use std::{borrow::Cow, ptr::NonNull, sync::Arc};
+use std::sync::Arc;
 
 use tokio::{
-    runtime::Runtime,
-    sync::{RwLock, mpsc::Sender},
+    sync::mpsc::Sender,
     task::block_in_place,
 };
 
@@ -24,7 +20,6 @@ use wayland_client::{
         wl_surface,
     },
 };
-use wgpu::{Buffer, RenderPipeline, util::DeviceExt};
 
 use smithay_client_toolkit::{
     compositor::{CompositorHandler, CompositorState, SurfaceData},
@@ -62,7 +57,6 @@ use smithay_client_toolkit::{
     },
 };
 
-use crate::state::State;
 
 pub enum DisplayMessage {
     CanDraw,

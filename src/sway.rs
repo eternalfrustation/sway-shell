@@ -94,7 +94,7 @@ impl From<SendError<Message>> for SwayError {
     }
 }
 
-async fn sway_generator(mut output: Sender<Message>) -> Result<(), SwayError> {
+async fn sway_generator(output: Sender<Message>) -> Result<(), SwayError> {
     let mut conn = swayipc::Connection::new()?;
     for workspace in conn.get_workspaces()?.into_iter().map(|v| v.into()) {
         output.send(Message::WorkspaceAdd(workspace)).await?;

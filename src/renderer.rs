@@ -1,14 +1,13 @@
 use std::{
     borrow::Cow,
     ptr::NonNull,
-    sync::{Arc, Condvar, Mutex},
+    sync::Arc,
 };
 
 use raw_window_handle::{
     RawDisplayHandle, RawWindowHandle, WaylandDisplayHandle, WaylandWindowHandle,
 };
 use tokio::{
-    join,
     runtime::Handle,
     sync::{
         RwLock,
@@ -17,7 +16,7 @@ use tokio::{
 };
 use wayland_client::{Proxy, protocol::wl_surface::WlSurface};
 use wgpu::{
-    Buffer, IndexFormat, PresentMode, RenderPipeline, SurfaceConfiguration, util::DeviceExt,
+    Buffer, IndexFormat, PresentMode, RenderPipeline, util::DeviceExt,
 };
 
 use crate::{layer::DisplayMessage, state::State};

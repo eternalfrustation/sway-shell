@@ -1,12 +1,6 @@
 use mpd::Status;
-use std::sync::Arc;
-use tokio::sync::RwLock;
 use tokio::sync::mpsc::{Receiver, Sender};
-use tokio::task::block_in_place;
-use wgpu::IndexFormat;
-use wgpu::util::DeviceExt;
 
-use crate::layer::DisplayMessage;
 use crate::sway::Workspace;
 
 #[derive(Debug, Clone)]

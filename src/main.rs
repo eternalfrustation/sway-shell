@@ -5,12 +5,10 @@ pub mod sway;
 
 use layer::Display;
 use renderer::Renderer;
-use smithay_client_toolkit::shell::WaylandSurface;
-use std::sync::{Arc, Condvar};
-use tokio::runtime::Handle;
+use std::sync::Arc;
 use tokio::sync::mpsc::channel;
 
-use tokio::{runtime::Runtime, sync::RwLock};
+use tokio::runtime::Runtime;
 
 use state::State;
 use sway::sway_subscription;
