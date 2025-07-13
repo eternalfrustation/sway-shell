@@ -61,7 +61,10 @@ impl State {
 
     fn update(&mut self, message: Message) {
         match message {
-            Message::WorkspaceAdd(workspace) => self.workspaces.push(workspace),
+            Message::WorkspaceAdd(workspace) => {
+                self.workspaces.push(workspace);
+                self.workspaces.sort_by_key(|v| v.num);
+            }
             Message::WorkspaceDel(id) => {
                 self.workspaces = self
                     .workspaces

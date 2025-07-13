@@ -1,8 +1,9 @@
-use std::{
-    borrow::Cow,
-    ptr::NonNull,
-    sync::Arc,
-};
+use std::collections::HashMap;
+use std::fs::File;
+use std::hash::RandomState;
+use std::io::Write;
+use std::mem;
+use std::{borrow::Cow, ptr::NonNull, sync::Arc};
 
 use raw_window_handle::{
     RawDisplayHandle, RawWindowHandle, WaylandDisplayHandle, WaylandWindowHandle,
@@ -15,10 +16,14 @@ use tokio::{
     },
 };
 use wayland_client::{Proxy, protocol::wl_surface::WlSurface};
+use wgpu::wgt::TextureDataOrder;
 use wgpu::{
-    Buffer, IndexFormat, PresentMode, RenderPipeline, util::DeviceExt,
+    AddressMode, Extent3d, FilterMode, SamplerDescriptor, TextureDescriptor, TextureDimension,
+    TextureFormat, TextureUsages, TextureViewDescriptor, TextureViewDimension,
 };
+use wgpu::{Buffer, BufferDescriptor, IndexFormat, PresentMode, RenderPipeline, util::DeviceExt};
 
+use crate::font::{FontSDF, generate_font_sdf};
 use crate::{layer::DisplayMessage, state::State};
 
 #[repr(C)]
@@ -73,11 +78,12 @@ pub struct Instance {
     pub scale: [f32; 2],
     pub bg: u32,
     pub fg: u32,
+    pub tex_offset: [f32; 2],
+    pub tex_scale: [f32; 2],
 }
 
 impl Instance {
     fn desc() -> wgpu::VertexBufferLayout<'static> {
-        use std::mem;
         wgpu::VertexBufferLayout {
             array_stride: mem::size_of::<Instance>() as wgpu::BufferAddress,
             // We need to switch from using a step mode of Vertex to Instance
@@ -102,12 +108,25 @@ impl Instance {
                 wgpu::VertexAttribute {
                     offset: mem::size_of::<[f32; 2]>() as wgpu::BufferAddress * 2,
                     shader_location: 7,
-                    format: wgpu::VertexFormat::Uint32,
+                    format: wgpu::VertexFormat::Unorm8x4,
                 },
                 wgpu::VertexAttribute {
-                    offset: mem::size_of::<[f32; 2]>() as wgpu::BufferAddress * 2 + mem::size_of::<u32>() as wgpu::BufferAddress,
+                    offset: mem::size_of::<[f32; 2]>() as wgpu::BufferAddress * 2
+                        + mem::size_of::<u32>() as wgpu::BufferAddress,
                     shader_location: 8,
-                    format: wgpu::VertexFormat::Uint32,
+                    format: wgpu::VertexFormat::Unorm8x4,
+                },
+                wgpu::VertexAttribute {
+                    offset: mem::size_of::<[f32; 2]>() as wgpu::BufferAddress * 2
+                        + mem::size_of::<u32>() as wgpu::BufferAddress * 2,
+                    shader_location: 9,
+                    format: wgpu::VertexFormat::Float32x2,
+                },
+                wgpu::VertexAttribute {
+                    offset: mem::size_of::<[f32; 2]>() as wgpu::BufferAddress * 3
+                        + mem::size_of::<u32>() as wgpu::BufferAddress * 2,
+                    shader_location: 10,
+                    format: wgpu::VertexFormat::Float32x2,
                 },
             ],
         }
@@ -127,7 +146,11 @@ pub struct Renderer {
     pub square_ib: Buffer,
     pub square_num_vertices: u32,
     pub global_transform_uniform_buffer: Buffer,
-    pub global_transform_bind_group: wgpu::BindGroup,
+    pub pipeline_bind_group: wgpu::BindGroup,
+    pub font_config_uniform_buffer: Buffer,
+    pub instance_buffer: Buffer,
+    pub font_texture: wgpu::Texture,
+    pub font_sdf: FontSDF,
 }
 
 const SQUARE: &[Vertex] = &[
@@ -194,6 +217,9 @@ impl Renderer {
             .await
             .expect("Failed to request device");
 
+        // Loading the font
+        // Need to write custom code for this part
+        let font_sdf = generate_font_sdf("a");
         // Load the shaders from disk
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: None,
@@ -207,9 +233,18 @@ impl Renderer {
                 contents: bytemuck::cast_slice(&[global_transform_uniform]),
                 usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             });
-        let global_transform_layout =
-            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-                entries: &[wgpu::BindGroupLayoutEntry {
+        // Start, end, smoothing
+        // TODO: Convert to a struct
+        let font_config_uniform = [0.49, 0.5, 0.1];
+        let font_config_uniform_buffer =
+            device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("Font Config Buffer"),
+                contents: bytemuck::cast_slice(&[font_config_uniform]),
+                usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            });
+        let pipeline_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            entries: &[
+                wgpu::BindGroupLayoutEntry {
                     binding: 0,
                     visibility: wgpu::ShaderStages::VERTEX,
                     ty: wgpu::BindingType::Buffer {
@@ -218,22 +253,98 @@ impl Renderer {
                         min_binding_size: None,
                     },
                     count: None,
-                }],
-                label: Some("camera_bind_group_layout"),
-            });
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 1,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        view_dimension: TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 2,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 3,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                },
+            ],
+            label: Some("total_bind_group_layout"),
+        });
 
-        let global_transform_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            layout: &global_transform_layout,
-            entries: &[wgpu::BindGroupEntry {
-                binding: 0,
-                resource: global_transform_uniform_buffer.as_entire_binding(),
-            }],
-            label: Some("camera_bind_group"),
+        let sampler = device.create_sampler(&SamplerDescriptor {
+            label: Some("Font Sampler"),
+            address_mode_u: AddressMode::ClampToEdge,
+            address_mode_v: AddressMode::ClampToEdge,
+            address_mode_w: AddressMode::ClampToEdge,
+            mag_filter: FilterMode::Linear,
+            min_filter: FilterMode::Nearest,
+            mipmap_filter: FilterMode::Nearest,
+            lod_min_clamp: 1.,
+            lod_max_clamp: 1.,
+            compare: None,
+            anisotropy_clamp: 1,
+            border_color: None,
+        });
+        let font_texture = device.create_texture_with_data(
+            &queue,
+            &TextureDescriptor {
+                label: Some("Font Atlas texture"),
+                size: Extent3d {
+                    width: font_sdf.width,
+                    height: font_sdf.height,
+                    depth_or_array_layers: 1,
+                },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: TextureDimension::D2,
+                format: TextureFormat::R8Unorm, // R8Unorm is 8 bit Grayscale
+                usage: TextureUsages::TEXTURE_BINDING,
+                view_formats: &[],
+            },
+            TextureDataOrder::LayerMajor,
+            &font_sdf.data,
+        );
+        let pipeline_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            layout: &pipeline_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: global_transform_uniform_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::TextureView(
+                        &font_texture.create_view(&TextureViewDescriptor::default()),
+                    ),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: wgpu::BindingResource::Sampler(&sampler),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 3,
+                    resource: font_config_uniform_buffer.as_entire_binding(),
+                },
+            ],
+            label: Some("pipeline_bind_group"),
         });
 
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: None,
-            bind_group_layouts: &[&global_transform_layout],
+            bind_group_layouts: &[&pipeline_layout],
             push_constant_ranges: &[],
         });
 
@@ -273,7 +384,18 @@ impl Renderer {
             contents: bytemuck::cast_slice(SQUARE_INDICES),
             usage: wgpu::BufferUsages::INDEX,
         });
+
+        // You can now only create 128 squares
+        let instance_buffer = device.create_buffer(&BufferDescriptor {
+            label: Some("Instance Buffer"),
+            size: 128 * mem::size_of::<Instance>() as u64,
+            mapped_at_creation: false,
+            usage: wgpu::BufferUsages::VERTEX.union(wgpu::BufferUsages::COPY_DST),
+        });
+
         Self {
+            font_config_uniform_buffer,
+            font_sdf,
             width,
             height,
             adapter,
@@ -283,9 +405,11 @@ impl Renderer {
             render_pipeline,
             square_vb,
             square_ib,
+            instance_buffer,
+            font_texture,
             square_num_vertices: SQUARE_INDICES.len() as u32,
             global_transform_uniform_buffer,
-            global_transform_bind_group,
+            pipeline_bind_group,
         }
     }
 
@@ -307,18 +431,28 @@ impl Renderer {
             .iter()
             .enumerate()
             .inspect(|(i, w)| log::info!("w{i}, focused: {}", w.visible))
-            .map(|(i, w)| Instance {
-                position: [i as f32 * 1., 0.],
-                scale: [1., 1.],
-                fg: if w.visible {0xff0000ff} else {0x0000ffff},
-                bg: 0x00ff00ff,
+            .map(|(i, w)| {
+                let char_glyph = self.font_sdf.locations[&'a'/*&(w.num % 10)
+                    .to_string)
+                    .chars()
+                    .next()
+                    .expect("number to string conversion to have atleast 1 character")*/];
+                Instance {
+                    position: [i as f32 * 1., 0.],
+                    scale: [1., 1.],
+                    fg: if w.visible { 0xff0000ff } else { 0xffff0000 },
+                    bg: 0xffffffff,
+                    tex_offset: [char_glyph.min.x, char_glyph.min.y],
+                    tex_scale: [char_glyph.width(), char_glyph.height()],
+                }
             })
             .collect::<Vec<Instance>>();
-        let instance_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("Instance Buffer"),
-            contents: bytemuck::cast_slice(instance_data.as_slice()),
-            usage: wgpu::BufferUsages::VERTEX,
-        });
+
+        queue.write_buffer(
+            &self.instance_buffer,
+            0,
+            bytemuck::cast_slice(instance_data.as_slice()),
+        );
 
         let mut encoder = device.create_command_encoder(&Default::default());
         {
@@ -336,10 +470,10 @@ impl Renderer {
                 timestamp_writes: None,
                 occlusion_query_set: None,
             });
-            renderpass.set_bind_group(0, &self.global_transform_bind_group, &[]);
+            renderpass.set_bind_group(0, &self.pipeline_bind_group, &[]);
             renderpass.set_pipeline(&self.render_pipeline);
             renderpass.set_vertex_buffer(0, self.square_vb.slice(..));
-            renderpass.set_vertex_buffer(1, instance_buffer.slice(..));
+            renderpass.set_vertex_buffer(1, self.instance_buffer.slice(..));
             renderpass.set_index_buffer(self.square_ib.slice(..), IndexFormat::Uint16);
             renderpass.draw_indexed(
                 0..self.square_num_vertices,

@@ -140,7 +140,7 @@ async fn sway_generator(output: Sender<Message>) -> Result<(), SwayError> {
                                     })
                                     .await;
                                 let _ = output
-                                    .send(Message::WorkspaceChangeVisiblity  {
+                                    .send(Message::WorkspaceChangeVisiblity {
                                         id: workspace.id,
                                         visible: true,
                                     })
@@ -150,7 +150,7 @@ async fn sway_generator(output: Sender<Message>) -> Result<(), SwayError> {
                             if let Some(workspace) = workspace_event.old {
                                 // lalalala, i can't hear the errors
                                 let _ = output
-                                    .send(Message::WorkspaceChangeVisiblity  {
+                                    .send(Message::WorkspaceChangeVisiblity {
                                         id: workspace.id,
                                         visible: false,
                                     })
@@ -162,7 +162,6 @@ async fn sway_generator(output: Sender<Message>) -> Result<(), SwayError> {
                                         focused: workspace.focused,
                                     })
                                     .await;
-
                             };
                         }
                         WorkspaceChange::Move => {
@@ -182,29 +181,23 @@ async fn sway_generator(output: Sender<Message>) -> Result<(), SwayError> {
                                 .await?;
                         }
                         WorkspaceChange::Urgent => {
-                            output
-                                .send(
-                                    workspace_event
-                                        .current
-                                        .map(|v| Message::WorkspaceChangeUrgency {
-                                            id: v.id,
-                                            urgent: v.urgent,
-                                        })
-                                        .expect("Workspace not null when emptying"),
-                                )
-                                .await?;
-                            tokio::task::yield_now().await;
-                            output
-                                .send(
-                                    workspace_event
-                                        .old
-                                        .map(|v| Message::WorkspaceChangeUrgency {
-                                            id: v.id,
-                                            urgent: v.urgent,
-                                        })
-                                        .expect("Workspace not null when emptying"),
-                                )
-                                .await?;
+                            if let Some(workspace) = workspace_event.current {
+                                output
+                                    .send(Message::WorkspaceChangeUrgency {
+                                        id: workspace.id,
+                                        urgent: workspace.urgent,
+                                    })
+                                    .await?;
+                            }
+
+                            if let Some(workspace) = workspace_event.old {
+                                output
+                                    .send(Message::WorkspaceChangeUrgency {
+                                        id: workspace.id,
+                                        urgent: workspace.urgent,
+                                    })
+                                    .await?;
+                            }
                         }
                         WorkspaceChange::Reload => {
                             log::info!("Config Reloaded, nothing changes for me");

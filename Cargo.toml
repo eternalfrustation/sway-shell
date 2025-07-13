@@ -4,6 +4,7 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+ab_glyph = "0.2.30"
 bytemuck = { version = "1.23.1", features = ["bytemuck_derive"] }
 log = "0.4.27"
 mpd = "0.1.0"
