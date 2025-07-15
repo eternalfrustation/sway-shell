@@ -1,3 +1,6 @@
+#![feature(sort_floats)]
+#![feature(iter_array_chunks)]
+
 pub mod layer;
 pub mod renderer;
 pub mod state;

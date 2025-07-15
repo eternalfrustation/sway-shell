@@ -18,8 +18,9 @@ use tokio::{
 use wayland_client::{Proxy, protocol::wl_surface::WlSurface};
 use wgpu::wgt::TextureDataOrder;
 use wgpu::{
-    AddressMode, Extent3d, FilterMode, SamplerDescriptor, TextureDescriptor, TextureDimension,
-    TextureFormat, TextureUsages, TextureViewDescriptor, TextureViewDimension,
+    AddressMode, DeviceDescriptor, Extent3d, Features, FilterMode, SamplerDescriptor,
+    TextureDescriptor, TextureDimension, TextureFormat, TextureUsages, TextureViewDescriptor,
+    TextureViewDimension,
 };
 use wgpu::{Buffer, BufferDescriptor, IndexFormat, PresentMode, RenderPipeline, util::DeviceExt};
 
@@ -212,8 +213,11 @@ impl Renderer {
             .await
             .expect("Failed to find suitable adapter");
 
+        let device_descriptor = DeviceDescriptor {
+            ..Default::default()
+        };
         let (device, queue) = adapter
-            .request_device(&Default::default())
+            .request_device(&device_descriptor)
             .await
             .expect("Failed to request device");
 
@@ -290,8 +294,8 @@ impl Renderer {
             address_mode_v: AddressMode::ClampToEdge,
             address_mode_w: AddressMode::ClampToEdge,
             mag_filter: FilterMode::Linear,
-            min_filter: FilterMode::Nearest,
-            mipmap_filter: FilterMode::Nearest,
+            min_filter: FilterMode::Linear,
+            mipmap_filter: FilterMode::Linear,
             lod_min_clamp: 1.,
             lod_max_clamp: 1.,
             compare: None,
@@ -441,7 +445,7 @@ impl Renderer {
                     position: [i as f32 * 1., 0.],
                     scale: [1., 1.],
                     fg: if w.visible { 0xff0000ff } else { 0xffff0000 },
-                    bg: 0xffffffff,
+                    bg: 0xff000000,
                     tex_offset: [char_glyph.min.x, char_glyph.min.y],
                     tex_scale: [char_glyph.width(), char_glyph.height()],
                 }

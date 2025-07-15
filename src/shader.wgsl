@@ -50,14 +50,14 @@ fn vs_main(input: VertexInput, instance: InstanceInput) -> VertexOutput {
     return out;
 }
 
-@fragment
-fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
-	let dist = textureSample(r_color, r_sampler, input.tex_coords).r;
-	let start = 0.5 + (dist - font_config.x) / font_config.z;
-	let end = 0.5 + (font_config.y - dist) / font_config.z;
-	let inside = clamp(min(start, end), 0.0, 1.0);
-	return textureSample(r_color, r_sampler, input.tex_coords);
-    //return input.fg * inside;
+fn median(r: f32, g: f32, b: f32) -> f32 {
+    return max(min(r, g), min(max(r, g), b));
 }
 
+const aa_threshold : f32 = 0.005;
 
+@fragment
+fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
+	let s =  textureSample(r_color, r_sampler, input.tex_coords).r;
+	return mix(input.fg, input.bg, vec4<f32>(s - 0.5) / aa_threshold);
+}
