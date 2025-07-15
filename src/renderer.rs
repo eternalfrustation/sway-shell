@@ -223,7 +223,7 @@ impl Renderer {
 
         // Loading the font
         // Need to write custom code for this part
-        let font_sdf = generate_font_sdf("a");
+        let font_sdf = generate_font_sdf("1234567890qwertyuiopasdfghjklzxcvbnm");
         // Load the shaders from disk
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: None,
@@ -436,11 +436,11 @@ impl Renderer {
             .enumerate()
             .inspect(|(i, w)| log::info!("w{i}, focused: {}", w.visible))
             .map(|(i, w)| {
-                let char_glyph = self.font_sdf.locations[&'a'/*&(w.num % 10)
-                    .to_string)
+                let char_glyph = self.font_sdf.locations[&(w.num % 10)
+                    .to_string()
                     .chars()
                     .next()
-                    .expect("number to string conversion to have atleast 1 character")*/];
+                    .expect("number to string conversion to have atleast 1 character")];
                 Instance {
                     position: [i as f32 * 1., 0.],
                     scale: [1., 1.],

@@ -41,10 +41,11 @@ struct VertexOutput {
 @vertex
 fn vs_main(input: VertexInput, instance: InstanceInput) -> VertexOutput {
     var out: VertexOutput;
-    out.tex_coords = vec2<f32>(1.0, 1.0) - (input.tex_coords * instance.tex_scale + instance.tex_offset) ;
+    //out.tex_coords = (input.tex_coords * instance.tex_scale + instance.tex_offset) ;
     out.clip_position = vec4<f32>(
         (input.position * instance.scale + instance.position) * global_transform.scale + global_transform.translate, 0.0, 1.0
     );
+	out.tex_coords =input.tex_coords;
     out.bg = instance.bg;
     out.fg = instance.fg;
     return out;
@@ -58,6 +59,6 @@ const aa_threshold : f32 = 0.005;
 
 @fragment
 fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
-	let s =  textureSample(r_color, r_sampler, input.tex_coords).r;
-	return mix(input.fg, input.bg, vec4<f32>(s - 0.5) / aa_threshold);
+	let s =  textureSample(r_color, r_sampler, input.tex_coords);
+	return mix(input.fg, input.bg, vec4<f32>(s.r - 0.5) / aa_threshold);
 }

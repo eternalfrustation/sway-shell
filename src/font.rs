@@ -910,7 +910,8 @@ impl From<Vec<Segment>> for Shape<Edge> {
 /// Padding inclusive
 struct ShapeBuilder {
     shape: Shape<Edge>,
-    width: f64,
+    w: f64,
+    outline: Outline,
 }
 
 impl ShapeBuilder {
@@ -918,14 +919,20 @@ impl ShapeBuilder {
         let scale = outline.bounds.height().abs() as f64;
         let segments: Vec<Segment> = outline
             .curves
+            .clone()
             .into_iter()
             .map(|c| ((Segment::from(c.clone())) + Vector::from(outline.bounds.min)) / scale)
             .collect();
         let shape: Shape<Edge> = segments.into();
         Self {
             shape: shape.into(),
-            width: outline.bounds.width().abs() as f64 / scale,
+            w: outline.bounds.width().abs() as f64 / scale,
+            outline,
         }
+    }
+
+    fn width(&self, height: usize) -> usize {
+        (self.w * height as f64).ceil() as usize
     }
 
     /// Returns the sdf, ready for rendering, and the width and height of the new
@@ -936,15 +943,17 @@ impl ShapeBuilder {
     ///
     /// TODO: Do something clever to generate either msdf or generate a way to get sharp corners
     /// for text
-    fn render(self, height: usize, padding: usize) -> (Vec<u8>, (usize, usize)) {
-        let width_f = self.width * height as f64;
+    fn render<F: FnMut(usize, usize, u8)>(self, height: usize, padding: usize, mut write_pixel: F) {
+        let width_f = self.w * height as f64;
         let height_f = height as f64;
         let inner_height = (height - 2 * padding) as f64;
-        let inner_width = self.width * inner_height;
+        let inner_width = self.w * inner_height;
         let width = width_f.ceil() as usize;
 
-        let mut img = vec![core::u8::MAX; width * height];
         let max_distance = 2. * (width_f.powi(2) + height_f.powi(2)).sqrt();
+
+        let horizontal_flipped = self.outline.bounds.width() < 0.;
+        let vertical_flipped = self.outline.bounds.height() < 0.;
 
         for y in 0..height {
             for x in 0..width {
@@ -962,10 +971,13 @@ impl ShapeBuilder {
                         }
                     }
                 }
-                img[y * width + x] = (255. * ((min_dist) + 1.) / 2.) as u8;
+                write_pixel(
+                    if horizontal_flipped { width - x } else { x },
+                    if vertical_flipped { height - y } else { y },
+                    (255. * ((min_dist) + 1.) / 2.) as u8,
+                );
             }
         }
-        return (img, (width, height));
     }
 }
 
@@ -973,32 +985,51 @@ pub fn generate_font_sdf(available_chars: &str) -> FontSDF {
     let font_ref = FontRef::try_from_slice(FONT_DATA).expect("The font to be a valid file");
 
     // TODO: Iterate and render and the characters instead of only one
-    let c = available_chars.chars().next().unwrap();
+    let outlines = available_chars
+        .chars()
+        .map(|c| (c, font_ref.glyph_id(c)))
+        .flat_map(|(c, id)| font_ref.outline(id).map(|outline| (c, outline)))
+        .map(|(c, outline)| (c, ShapeBuilder::new(outline)));
 
-    let c_id = font_ref.glyph_id(c);
-    // TODO: Handle the no outline case as well
-    let c_outline = font_ref.outline(c_id).unwrap();
+    let grid_side = available_chars.len().isqrt() + 1;
 
-    let (img, dim) = ShapeBuilder::new(c_outline).render(16, 2);
-    dbg!(&img);
+    let mut img = vec![0u8; grid_side * grid_side * 16 * 16];
+
+    dbg!(grid_side * 16);
+
+    let mut locations = HashMap::new();
+
+    for ((grid_x, grid_y), (c, shape_builder)) in (0..grid_side)
+        .flat_map(|y| (0..grid_side).map(move |x| (x, y)))
+        .zip(outlines)
+    {
+        shape_builder.render(16, 2, |x, y, b| {
+            img[grid_y * 16 * grid_side * 16 + grid_x * 16 + grid_side * 16 * y + x] = b
+        });
+        locations.insert(
+            c,
+            Rect {
+                min: Point {
+                    x: (grid_x) as f32 / grid_side as f32,
+                    y: (grid_y) as f32 / grid_side as f32,
+                },
+                max: Point {
+                    x: (grid_x + 1) as f32 / grid_side as f32,
+                    y: (grid_y + 1) as f32 / grid_side as f32,
+                },
+            },
+        );
+    }
+
+    // The curves are, in fact, in order
+    // From the code in ttf_glyph
     let mut temp_file = File::create("temp_img.data").unwrap();
     temp_file.write_all(bytemuck::cast_slice(&img)).unwrap();
 
-    let mut locations = HashMap::new();
-    // The curves are, in fact, in order
-    // From the code in ttf_glyph
-    locations.insert(
-        c,
-        Rect {
-            min: Point { x: 1., y: 0. },
-            max: Point { x: 0., y: 1. },
-        },
-    );
-
     FontSDF {
         data: bytemuck::cast_slice(&img).to_vec(),
-        width: dim.0 as u32,
-        height: dim.1 as u32,
+        width: ( grid_side * 16 ) as u32,
+        height: ( grid_side * 16 ) as u32,
         locations,
     }
 }
