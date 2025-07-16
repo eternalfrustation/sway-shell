@@ -921,7 +921,9 @@ impl ShapeBuilder {
             .curves
             .clone()
             .into_iter()
-            .map(|c| ((Segment::from(c.clone())) + Vector::from(outline.bounds.min)) / scale)
+            .map(|c| {
+                ((Segment::from(c.clone())) + (Vector::from(outline.bounds.min) )) / scale
+            })
             .collect();
         let shape: Shape<Edge> = segments.into();
         Self {
@@ -972,8 +974,8 @@ impl ShapeBuilder {
                     }
                 }
                 write_pixel(
-                    if horizontal_flipped { width - x } else { x },
-                    if vertical_flipped { height - y } else { y },
+                    if horizontal_flipped { width - x - 1 } else { x },
+                    if vertical_flipped { height - y - 1 } else { y },
                     (255. * ((min_dist) + 1.) / 2.) as u8,
                 );
             }
@@ -984,38 +986,48 @@ impl ShapeBuilder {
 pub fn generate_font_sdf(available_chars: &str) -> FontSDF {
     let font_ref = FontRef::try_from_slice(FONT_DATA).expect("The font to be a valid file");
 
+    const PIX_HEIGHT: usize = 20;
     // TODO: Iterate and render and the characters instead of only one
-    let outlines = available_chars
+    let (outlines, (width, height), last_pos) = available_chars
         .chars()
         .map(|c| (c, font_ref.glyph_id(c)))
         .flat_map(|(c, id)| font_ref.outline(id).map(|outline| (c, outline)))
-        .map(|(c, outline)| (c, ShapeBuilder::new(outline)));
+        .map(|(c, outline)| (c, ShapeBuilder::new(outline)))
+        .map(|(c, shape_builder)| (c, shape_builder.width(PIX_HEIGHT), shape_builder))
+        .fold(
+            (HashMap::new(), (0, 0), (0, 0)),
+            |(mut positions, (width, height), (x, y)), (c, w, shape_builder)| {
+                let current_width = shape_builder.width(PIX_HEIGHT);
+                positions.insert(c, (shape_builder, w, (x, y)));
+                let x = x + current_width;
+                let width = if x > width {
+                    width + current_width
+                } else {
+                    width
+                };
+                (positions, (width, height), (x, height))
+            },
+        );
 
-    let grid_side = available_chars.len().isqrt() + 1;
 
-    let mut img = vec![0u8; grid_side * grid_side * 16 * 16];
-
-    dbg!(grid_side * 16);
+    let mut img = vec![0u8; width * (height + PIX_HEIGHT)];
 
     let mut locations = HashMap::new();
 
-    for ((grid_x, grid_y), (c, shape_builder)) in (0..grid_side)
-        .flat_map(|y| (0..grid_side).map(move |x| (x, y)))
-        .zip(outlines)
-    {
-        shape_builder.render(16, 2, |x, y, b| {
-            img[grid_y * 16 * grid_side * 16 + grid_x * 16 + grid_side * 16 * y + x] = b
+    for (c, (shape_builder, c_width, (bottom_right_x, bottom_right_y))) in outlines.into_iter() {
+        shape_builder.render(PIX_HEIGHT, 2, |x, y, b| {
+            img[width * (y + bottom_right_y) + (x + bottom_right_x)] = b;
         });
         locations.insert(
             c,
             Rect {
                 min: Point {
-                    x: (grid_x) as f32 / grid_side as f32,
-                    y: (grid_y) as f32 / grid_side as f32,
+                    x: (bottom_right_x) as f32 / width as f32,
+                    y: (bottom_right_y) as f32 / (height + PIX_HEIGHT) as f32,
                 },
                 max: Point {
-                    x: (grid_x + 1) as f32 / grid_side as f32,
-                    y: (grid_y + 1) as f32 / grid_side as f32,
+                    x: (bottom_right_x + c_width) as f32 / width as f32,
+                    y: (bottom_right_y + PIX_HEIGHT) as f32 / (height + PIX_HEIGHT) as f32,
                 },
             },
         );
@@ -1028,8 +1040,8 @@ pub fn generate_font_sdf(available_chars: &str) -> FontSDF {
 
     FontSDF {
         data: bytemuck::cast_slice(&img).to_vec(),
-        width: ( grid_side * 16 ) as u32,
-        height: ( grid_side * 16 ) as u32,
+        width: width as u32,
+        height: (height + PIX_HEIGHT) as u32,
         locations,
     }
 }

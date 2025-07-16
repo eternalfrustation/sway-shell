@@ -45,7 +45,7 @@ fn vs_main(input: VertexInput, instance: InstanceInput) -> VertexOutput {
     out.clip_position = vec4<f32>(
         (input.position * instance.scale + instance.position) * global_transform.scale + global_transform.translate, 0.0, 1.0
     );
-	out.tex_coords =input.tex_coords;
+	out.tex_coords = (input.tex_coords * instance.tex_scale) + instance.tex_offset;
     out.bg = instance.bg;
     out.fg = instance.fg;
     return out;
