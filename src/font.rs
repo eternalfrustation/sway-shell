@@ -15,7 +15,7 @@ pub struct FontSDF {
     pub data: Vec<u8>,
     pub width: u32,
     pub height: u32,
-    pub locations: HashMap<char, Rect>,
+    pub locations: HashMap<char, (f64, Rect)>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -921,9 +921,7 @@ impl ShapeBuilder {
             .curves
             .clone()
             .into_iter()
-            .map(|c| {
-                ((Segment::from(c.clone())) + (Vector::from(outline.bounds.min) )) / scale
-            })
+            .map(|c| ((Segment::from(c.clone())) + (Vector::from(outline.bounds.min))) / scale)
             .collect();
         let shape: Shape<Edge> = segments.into();
         Self {
@@ -988,7 +986,7 @@ pub fn generate_font_sdf(available_chars: &str) -> FontSDF {
 
     const PIX_HEIGHT: usize = 20;
     // TODO: Iterate and render and the characters instead of only one
-    let (outlines, (width, height), last_pos) = available_chars
+    let (outlines, (width, height), _) = available_chars
         .chars()
         .map(|c| (c, font_ref.glyph_id(c)))
         .flat_map(|(c, id)| font_ref.outline(id).map(|outline| (c, outline)))
@@ -1009,7 +1007,6 @@ pub fn generate_font_sdf(available_chars: &str) -> FontSDF {
             },
         );
 
-
     let mut img = vec![0u8; width * (height + PIX_HEIGHT)];
 
     let mut locations = HashMap::new();
@@ -1020,16 +1017,19 @@ pub fn generate_font_sdf(available_chars: &str) -> FontSDF {
         });
         locations.insert(
             c,
-            Rect {
-                min: Point {
-                    x: (bottom_right_x) as f32 / width as f32,
-                    y: (bottom_right_y) as f32 / (height + PIX_HEIGHT) as f32,
+            (
+                c_width as f64 / PIX_HEIGHT as f64,
+                Rect {
+                    min: Point {
+                        x: (bottom_right_x) as f32 / width as f32,
+                        y: (bottom_right_y) as f32 / (height + PIX_HEIGHT) as f32,
+                    },
+                    max: Point {
+                        x: (bottom_right_x + c_width) as f32 / width as f32,
+                        y: (bottom_right_y + PIX_HEIGHT) as f32 / (height + PIX_HEIGHT) as f32,
+                    },
                 },
-                max: Point {
-                    x: (bottom_right_x + c_width) as f32 / width as f32,
-                    y: (bottom_right_y + PIX_HEIGHT) as f32 / (height + PIX_HEIGHT) as f32,
-                },
-            },
+            ),
         );
     }
 

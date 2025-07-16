@@ -5,14 +5,17 @@ pub mod layer;
 pub mod renderer;
 pub mod state;
 pub mod sway;
+pub mod mpd;
 pub mod font;
 
 use layer::Display;
+use mpd::mpd_subscription;
 use renderer::Renderer;
 use std::sync::Arc;
 use tokio::sync::mpsc::channel;
 
 use tokio::runtime::Runtime;
+use tokio_stream::StreamExt;
 
 use state::State;
 use sway::sway_subscription;
@@ -23,9 +26,11 @@ fn main() {
 
     let state = State::new();
     let sway_stream = sway_subscription(rt.clone());
+    let mpd_stream = mpd_subscription(rt.clone());
     let (render_sender, render_receiver) = channel(1);
     let (display_sender, display_receiver) = channel(1);
-    let state_event_loop_handle = rt.spawn(state.run_event_loop(sway_stream, render_sender));
+    // Currently using the merge method, ideally would use a StreamMap
+    let state_event_loop_handle = rt.spawn(state.run_event_loop(sway_stream.merge(mpd_stream), render_sender));
     // IDK how else to do this
     const HEIGHT: u32 = 20;
     let (display, event_queue) = Display::new(HEIGHT, display_sender);

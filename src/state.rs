@@ -1,5 +1,8 @@
+use std::time::Duration;
+
 use mpd::Status;
 use tokio::sync::mpsc::{Receiver, Sender};
+use tokio_stream::StreamExt;
 
 use crate::sway::Workspace;
 
@@ -30,6 +33,12 @@ pub enum Message {
         id: i64,
         urgent: bool,
     },
+    MpdPlayerUpdate {
+        status: mpd::Status,
+    },
+    MpdTimeElapsed {
+        elapsed: Duration,
+    },
 }
 
 impl State {
@@ -40,16 +49,16 @@ impl State {
         }
     }
 
-    pub async fn run_event_loop(
+    pub async fn run_event_loop<S: StreamExt<Item = Message> + std::marker::Unpin>(
         mut self,
-        mut message_receiver: Receiver<Message>,
+        mut message_receiver: S,
         render_sender: Sender<Self>,
     ) {
         render_sender
             .send(self.clone())
             .await
             .expect("To be able to send render requests without drama, when initializing");
-        while let Some(message) = message_receiver.recv().await {
+        while let Some(message) = message_receiver.next().await {
             log::info!("{message:?}");
             self.update(message);
             render_sender
@@ -102,6 +111,14 @@ impl State {
                     &mut self.workspaces.iter_mut().filter(|v| v.id == id).next()
                 {
                     workspace.visible = visible;
+                }
+            }
+            Message::MpdPlayerUpdate { status } => {
+                self.mpd_status = Some(status);
+            }
+            Message::MpdTimeElapsed { elapsed } => {
+                if let Some(ref mut mpd_stats) = self.mpd_status {
+                    mpd_stats.elapsed = Some(elapsed);
                 }
             }
         }

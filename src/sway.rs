@@ -1,4 +1,5 @@
 use std::sync::Arc;
+use tokio_stream::Stream;
 
 use swayipc::{Event, EventType, Node, Rect, WorkspaceChange};
 use tokio::{
@@ -94,10 +95,10 @@ impl From<SendError<Message>> for SwayError {
     }
 }
 
-async fn sway_generator(output: Sender<Message>) -> Result<(), SwayError> {
+fn sway_generator(output: Sender<Message>) -> Result<(), SwayError> {
     let mut conn = swayipc::Connection::new()?;
     for workspace in conn.get_workspaces()?.into_iter().map(|v| v.into()) {
-        output.send(Message::WorkspaceAdd(workspace)).await?;
+        output.blocking_send(Message::WorkspaceAdd(workspace))?;
     }
 
     for event in conn.subscribe([EventType::Workspace])? {
@@ -109,94 +110,74 @@ async fn sway_generator(output: Sender<Message>) -> Result<(), SwayError> {
                 match event {
                     Event::Workspace(workspace_event) => match workspace_event.change {
                         WorkspaceChange::Init => {
-                            output
-                                .send(Message::WorkspaceAdd(
-                                    workspace_event
-                                        .current
-                                        .expect("Workspace to not be null when it is created")
-                                        .try_into()
-                                        .expect("This to be a workspace"),
-                                ))
-                                .await?;
+                            output.blocking_send(Message::WorkspaceAdd(
+                                workspace_event
+                                    .current
+                                    .expect("Workspace to not be null when it is created")
+                                    .try_into()
+                                    .expect("This to be a workspace"),
+                            ))?;
                         }
                         WorkspaceChange::Empty => {
-                            output
-                                .send(Message::WorkspaceDel(
-                                    workspace_event
-                                        .current
-                                        .expect("Workspace not null when emptying")
-                                        .id,
-                                ))
-                                .await?;
+                            output.blocking_send(Message::WorkspaceDel(
+                                workspace_event
+                                    .current
+                                    .expect("Workspace not null when emptying")
+                                    .id,
+                            ))?;
                         }
                         WorkspaceChange::Focus => {
                             if let Some(workspace) = workspace_event.current {
-                                // lalalala, i can't hear the errors
-                                let _ = output
-                                    .send(Message::WorkspaceChangeFocus {
-                                        id: workspace.id,
-                                        focus: workspace.focus,
-                                        focused: workspace.focused,
-                                    })
-                                    .await;
-                                let _ = output
-                                    .send(Message::WorkspaceChangeVisiblity {
-                                        id: workspace.id,
-                                        visible: true,
-                                    })
-                                    .await;
+                                output.blocking_send(Message::WorkspaceChangeFocus {
+                                    id: workspace.id,
+                                    focus: workspace.focus,
+                                    focused: workspace.focused,
+                                })?;
+                                output.blocking_send(Message::WorkspaceChangeVisiblity {
+                                    id: workspace.id,
+                                    visible: true,
+                                });
                             };
 
                             if let Some(workspace) = workspace_event.old {
-                                // lalalala, i can't hear the errors
-                                let _ = output
-                                    .send(Message::WorkspaceChangeVisiblity {
-                                        id: workspace.id,
-                                        visible: false,
-                                    })
-                                    .await;
-                                let _ = output
-                                    .send(Message::WorkspaceChangeFocus {
-                                        id: workspace.id,
-                                        focus: workspace.focus,
-                                        focused: workspace.focused,
-                                    })
-                                    .await;
+                                output.blocking_send(Message::WorkspaceChangeVisiblity {
+                                    id: workspace.id,
+                                    visible: false,
+                                })?;
+                                output.blocking_send(Message::WorkspaceChangeFocus {
+                                    id: workspace.id,
+                                    focus: workspace.focus,
+                                    focused: workspace.focused,
+                                })?;
                             };
                         }
                         WorkspaceChange::Move => {
                             log::info!("Workspace moved, do nothing");
                         }
                         WorkspaceChange::Rename => {
-                            output
-                                .send(
-                                    workspace_event
-                                        .current
-                                        .map(|v| Message::WorkspaceRename {
-                                            id: v.id,
-                                            name: v.name,
-                                        })
-                                        .expect("Workspace not null when emptying"),
-                                )
-                                .await?;
+                            output.blocking_send(
+                                workspace_event
+                                    .current
+                                    .map(|v| Message::WorkspaceRename {
+                                        id: v.id,
+                                        name: v.name,
+                                    })
+                                    .expect("Workspace not null when emptying"),
+                            )?;
                         }
                         WorkspaceChange::Urgent => {
                             if let Some(workspace) = workspace_event.current {
-                                output
-                                    .send(Message::WorkspaceChangeUrgency {
-                                        id: workspace.id,
-                                        urgent: workspace.urgent,
-                                    })
-                                    .await?;
+                                output.blocking_send(Message::WorkspaceChangeUrgency {
+                                    id: workspace.id,
+                                    urgent: workspace.urgent,
+                                })?;
                             }
 
                             if let Some(workspace) = workspace_event.old {
-                                output
-                                    .send(Message::WorkspaceChangeUrgency {
-                                        id: workspace.id,
-                                        urgent: workspace.urgent,
-                                    })
-                                    .await?;
+                                output.blocking_send(Message::WorkspaceChangeUrgency {
+                                    id: workspace.id,
+                                    urgent: workspace.urgent,
+                                })?;
                             }
                         }
                         WorkspaceChange::Reload => {
@@ -214,16 +195,15 @@ async fn sway_generator(output: Sender<Message>) -> Result<(), SwayError> {
     Ok(())
 }
 
-pub fn sway_subscription(rt: Arc<Runtime>) -> Receiver<Message> {
+pub fn sway_subscription(rt: Arc<Runtime>) -> impl Stream<Item = Message> {
     let (sender, receiver) = channel(1);
-    rt.spawn(async move {
+    rt.spawn_blocking(move || {
         loop {
             log::error!(
-                "Sway subscription event loop returned, this should never happen {:?}",
-                sway_generator(sender.clone()).await
+                "Sway subscription event loop returned, this should never happen trying to reconnect {:?}",
+                sway_generator(sender.clone())
             )
         }
     });
-
-    receiver
+    tokio_stream::wrappers::ReceiverStream::new(receiver)
 }

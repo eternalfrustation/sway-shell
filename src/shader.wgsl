@@ -55,7 +55,7 @@ fn median(r: f32, g: f32, b: f32) -> f32 {
     return max(min(r, g), min(max(r, g), b));
 }
 
-const aa_threshold : f32 = 0.005;
+const aa_threshold : f32 = 0.02;
 
 @fragment
 fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {

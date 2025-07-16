@@ -430,27 +430,57 @@ impl Renderer {
         let texture_view = surface_texture
             .texture
             .create_view(&wgpu::TextureViewDescriptor::default());
-        let instance_data = state
+        let (offset, mut instance_data) = state
             .workspaces
             .iter()
-            .enumerate()
-            .inspect(|(i, w)| log::info!("w{i}, focused: {}", w.visible))
-            .map(|(i, w)| {
-                let char_glyph = self.font_sdf.locations[&(w.num % 10)
-                    .to_string()
-                    .chars()
-                    .next()
-                    .expect("number to string conversion to have atleast 1 character")];
-                Instance {
-                    position: [i as f32 * 1., 0.],
-                    scale: [1., 1.],
-                    fg: if w.visible { 0xff0000ff } else { 0xffff0000 },
-                    bg: 0xff000000,
-                    tex_offset: [char_glyph.min.x, char_glyph.min.y],
-                    tex_scale: [char_glyph.width(), char_glyph.height()],
-                }
+            .flat_map(|w| {
+                self.font_sdf
+                    .locations
+                    .get(
+                        &(w.num % 10)
+                            .to_string()
+                            .chars()
+                            .next()
+                            .expect("number to string conversion to have atleast 1 character"),
+                    )
+                    .map(|v| (w.visible, v.0, v.1))
             })
-            .collect::<Vec<Instance>>();
+            .fold(
+                (0., Vec::with_capacity(state.workspaces.len())),
+                |(offset, mut instances), (is_visible, width, char_glyph)| {
+                    instances.push(Instance {
+                        position: [offset, 0.],
+                        scale: [1., 1.],
+                        fg: if is_visible { 0xff0000ff } else { 0xffff0000 },
+                        bg: 0x00000000,
+                        tex_offset: [char_glyph.min.x, char_glyph.min.y],
+                        tex_scale: [char_glyph.width(), char_glyph.height()],
+                    });
+                    (offset + width as f32, instances)
+                },
+            );
+        const MPD_PROGRESS_WIDTH: f32 = 10.;
+        if let Some(ref mpd) = state.mpd_status {
+            if let Some((elapsed, duration)) = mpd.elapsed.zip(mpd.duration) {
+                let progress = elapsed.as_secs_f32() / duration.as_secs_f32();
+                instance_data.push(Instance {
+                    position: [offset, 0.],
+                    scale: [progress * MPD_PROGRESS_WIDTH, 1.],
+                    bg: 0xffffffff,
+                    fg: 0xffffffff,
+                    tex_scale: [1., 1.],
+                    tex_offset: [0., 0.],
+                });
+                instance_data.push(Instance {
+                    position: [offset + progress * MPD_PROGRESS_WIDTH, 0.],
+                    scale: [(1. - progress) * MPD_PROGRESS_WIDTH, 1.],
+                    bg: 0xff0000ff,
+                    fg: 0xff0000ff,
+                    tex_scale: [1., 1.],
+                    tex_offset: [0., 0.],
+                });
+            }
+        }
 
         queue.write_buffer(
             &self.instance_buffer,
