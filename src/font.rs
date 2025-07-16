@@ -6,7 +6,6 @@ use std::{
 };
 
 use ab_glyph::{Font, FontRef, Outline, OutlineCurve, Point, Rect};
-use bytemuck::Zeroable;
 
 pub const FONT_DATA: &[u8] = include_bytes!("test_font.ttf");
 
@@ -189,14 +188,6 @@ impl Segment {
             Segment::BEZ3(bez3) => bez3.sdistance(p),
         }
     }
-
-    fn pseudo_sdistance(&self, p: Vector) -> f64 {
-        match self {
-            Segment::LINE(line) => line.pseudo_sdistance(p),
-            Segment::BEZ2(bez2) => bez2.pseudo_sdistance(p),
-            Segment::BEZ3(bez3) => bez3.pseudo_sdistance(p),
-        }
-    }
 }
 
 impl Add<Vector> for Segment {
@@ -276,18 +267,6 @@ impl Line {
             .sqrt()
             .copysign((self.1 - self.0).cross(p - p_prime))
     }
-
-    fn pseudo_sdistance(&self, p: Vector) -> f64 {
-        if self.1 == self.0 {
-            return self.1.sq_dist(p).sqrt();
-        }
-        let t = (p - self.0).dot(self.1 - self.0) / (self.1 - self.0).dot(self.1 - self.0);
-        let p_prime = self.0 * (1. - t) + self.1 * t;
-        p_prime
-            .sq_dist(p)
-            .sqrt()
-            .copysign((self.1 - self.0).cross(p - p_prime))
-    }
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -336,117 +315,6 @@ impl Bez2 {
             .min_by(|x, y| x.abs().total_cmp(&y.abs()));
         dist.unwrap()
     }
-
-    fn pseudo_sdistance(&self, p: Vector) -> f64 {
-        let p0 = p - self.0;
-        let p1 = self.1 - self.0;
-        let p2 = self.2 - self.1 * 2. + self.0;
-
-        let k0 = p2.dot(p2);
-        let k1 = p1.dot(p2) * 3.;
-        let k2 = 2. * p1.dot(p1) - p2.dot(p0);
-        let k3 = p1.dot(p0) * -1.;
-
-        let roots = solve_cubic(k0, k1, k2, k3).unwrap();
-
-        let min = roots
-            .into_iter()
-            .map(|r| {
-                let p_prime = p2 * r * r + p1 * 2. * r + self.0;
-
-                let dist = p_prime
-                    .sq_dist(p)
-                    .sqrt()
-                    .copysign((p2 * 2. * r + p1 * 2.).cross(p - p_prime));
-                dist
-            })
-            .min_by(|x, y| x.abs().total_cmp(&y.abs()));
-        min.unwrap()
-    }
-}
-
-/*
-fn solve_cubic_normed(mut a: f64, b: f64, c: f64) -> Vec<f64> {
-    let a2 = a * a;
-    let mut q = 1. / 9. * (a2 - 3. * b);
-    let r = 1. / 54. * (a * (2. * a2 - 9. * b) + 27. * c);
-    let r2 = r * r;
-    let q3 = q * q * q;
-    a *= 1. / 3.;
-    if r2 < q3 {
-        let mut t = r / q3.sqrt();
-        if t < -1. {
-            t = -1.
-        };
-        if t > 1. {
-            t = 1.
-        };
-        t = t.acos();
-        q = -2. * q.sqrt();
-        let x0 = q * (1. / 3. * t).cos() - a;
-        let x1 = q * (1. / 3. * (t + 2. * std::f64::consts::PI)).cos() - a;
-        let x2 = q * (1. / 3. * (t - 2. * std::f64::consts::PI)).cos() - a;
-        return vec![x0, x1, x2];
-    } else {
-        let u = (if r < 0. { 1. } else { -1. }) * ((r).abs() + (r2 - q3).sqrt()).powf(1. / 3.);
-        let v = if u == 0. { 0. } else { q / u };
-        let x0 = (u + v) - a;
-        if u == v || (u - v).abs() < 1e-12 * (u + v).abs() {
-            let x1 = -0.5 * (u + v) - a;
-            return vec![x0, x1];
-        }
-        return vec![x0];
-    }
-}
-*/
-
-#[derive(Debug)]
-struct Clash {
-    x: usize,
-    y: usize,
-}
-
-const EDGE_THRESHOLD: f32 = 0.02;
-const RANGE: f32 = 0.5;
-
-fn pixel_clash(a: [f32; 3], b: [f32; 3], threshold: f32) -> bool {
-    let aIn = (a[0] > 0.5) as usize + (a[1] > 0.5) as usize + ((a[2] > 0.5) as usize) >= 2;
-    let bIn = (b[0] > 0.5) as usize + (b[1] > 0.5) as usize + (b[2] > 0.5) as usize >= 2;
-    if aIn != bIn {
-        return false;
-    };
-    if (a[0] > 0.5 && a[1] > 0.5 && a[2] > 0.5)
-        || (a[0] < 0.5 && a[1] < 0.5 && a[2] < 0.5)
-        || (b[0] > 0.5 && b[1] > 0.5 && b[2] > 0.5)
-        || (b[0] < 0.5 && b[1] < 0.5 && b[2] < 0.5)
-    {
-        return false;
-    }
-    let (aa, ba, (ab, ac, bb, bc)) = if (a[0] > 0.5) != (b[0] > 0.5) && (a[0] < 0.5) != (b[0] < 0.5)
-    {
-        (
-            a[0],
-            b[0],
-            if (a[1] > 0.5) != (b[1] > 0.5) && (a[1] < 0.5) != (b[1] < 0.5) {
-                (a[1], a[2], b[1], b[2])
-            } else if (a[2] > 0.5) != (b[2] > 0.5) && (a[2] < 0.5) != (b[2] < 0.5) {
-                (a[2], a[1], b[2], b[1])
-            } else {
-                return false;
-            },
-        )
-    } else if (a[1] > 0.5) != (b[1] > 0.5)
-        && (a[1] < 0.5) != (b[1] < 0.5)
-        && (a[2] > 0.5) != (b[2] > 0.5)
-        && (a[2] < 0.5) != (b[2] < 0.5)
-    {
-        (a[1], b[1], (a[2], a[0], b[2], b[0]))
-    } else {
-        return false;
-    };
-    return ((aa - ba).abs() >= threshold)
-        && ((ab - bb).abs() >= threshold)
-        && (ac - 0.5).abs() >= (bc - 0.5).abs();
 }
 
 fn solve_cubic(a: f64, b: f64, c: f64, d: f64) -> Option<Vec<f64>> {
@@ -570,36 +438,6 @@ impl Bez3 {
         roots.push(1.);
         roots.into_iter().fold(std::f64::MAX, |min_dist, r| {
             let r = r.clamp(0., 1.);
-            let p_prime = p3 * r * r * r + p2 * 3. * r * r + p1 * 3. * r + self.0;
-            let dist = p_prime.sq_dist(p).sqrt();
-            if dist < min_dist.abs() {
-                dist * (p3 * 3. * r * r + p2 * 6. * r + p1 * 3.)
-                    .cross(p - p_prime)
-                    .signum()
-            } else {
-                min_dist
-            }
-        })
-    }
-
-    fn pseudo_sdistance(&self, p: Vector) -> f64 {
-        let p0 = p - self.0;
-        let p1 = self.1 - self.0;
-        let p2 = self.2 - self.1 * 2. + self.0;
-        let p3 = self.3 - self.2 * 3. + self.1 * 3. + self.0;
-
-        let k0 = p3.dot(p3);
-        let k1 = p2.dot(p3) * 5.;
-        let k2 = (p1.dot(p3) + p2.dot(p2) * 6.) * 4.;
-        let k3 = p1.dot(p2) * 9. - p2.dot(p0);
-        let k4 = p1.dot(p1) * 3. - p2.dot(p0) * 2.;
-        let k5 = p1.dot(p0) * -1.;
-        let roots = match solve_quintic(k0, k1, k2, k3, k4, k5) {
-            Some(r) => r,
-            None => return p.sq_dist(self.1),
-        }
-        .to_vec();
-        roots.into_iter().fold(std::f64::MAX, |min_dist, r| {
             let p_prime = p3 * r * r * r + p2 * 3. * r * r + p1 * 3. * r + self.0;
             let dist = p_prime.sq_dist(p).sqrt();
             if dist < min_dist.abs() {
@@ -755,14 +593,14 @@ fn solve_quartic(a: f64, b: f64, c: f64, d: f64, e: f64) -> Option<Vec<f64>> {
     }
 
     // Normalize to x^4 + ax^3 + bx^2 + cx + d = 0
-    let A = b / a;
-    let B = c / a;
-    let C = d / a;
-    let D = e / a;
+    let a_0 = b / a;
+    let b_0 = c / a;
+    let c_0 = d / a;
+    let d_0 = e / a;
 
-    let p = B - 3.0 * A * A / 8.0;
-    let q = C + A * A * A / 8.0 - A * B / 2.0;
-    let r = D - 3.0 * A * A * A * A / 256.0 + A * A * B / 16.0 - A * C / 4.0;
+    let p = b_0 - 3.0 * a_0 * a_0 / 8.0;
+    let q = c_0 + a_0 * a_0 * a_0 / 8.0 - a_0 * b_0 / 2.0;
+    let r = d_0 - 3.0 * a_0 * a_0 * a_0 * a_0 / 256.0 + a_0 * a_0 * b_0 / 16.0 - a_0 * c_0 / 4.0;
 
     // Solve the resolvent cubic: z^3 - pz^2 - 4rz + (4pr - q^2) = 0
     let cubic_roots = match solve_cubic(1.0, -p, -4.0 * r, 4.0 * p * r - q * q) {
@@ -773,37 +611,37 @@ fn solve_quartic(a: f64, b: f64, c: f64, d: f64, e: f64) -> Option<Vec<f64>> {
     // Find a suitable real root 'y' from the resolvent cubic
     let y = cubic_roots[0]; // Any real root will do
     //
-    let mut R_sq = y - p;
-    if R_sq < 0. {
-        R_sq = 0.
+    let mut r_sq = y - p;
+    if r_sq < 0. {
+        r_sq = 0.
     }; // Handle precision errors
-    let R = R_sq.sqrt();
+    let r = r_sq.sqrt();
 
-    let (mut S1, mut S2) = (0., 0.);
+    let (mut s1, mut s2) = (0., 0.);
     if y * y - 4. * r >= 0. {
-        S1 = (y * y - 4. * r).sqrt()
+        s1 = (y * y - 4. * r).sqrt()
     };
     if y * y - 4. * r < 0. {
-        S2 = (4. * r - y * y).sqrt()
+        s2 = (4. * r - y * y).sqrt()
     };
 
     let mut roots = Vec::with_capacity(4);
 
-    for root in match solve_quadratic(1., R, (y + S1 + S2) / 2.0) {
+    for root in match solve_quadratic(1., r, (y + s1 + s2) / 2.0) {
         Some(v) => v,
         None => return None,
     }
     .into_iter()
     {
-        roots.push(root - A / 4.);
+        roots.push(root - a_0 / 4.);
     }
-    for root in match solve_quadratic(1., -R, (y - S1 - S2) / 2.0) {
+    for root in match solve_quadratic(1., -r, (y - s1 - s2) / 2.0) {
         Some(v) => v,
         None => return None,
     }
     .into_iter()
     {
-        roots.push(root - A / 4.);
+        roots.push(root - a_0 / 4.);
     }
     Some(roots)
 }
@@ -998,6 +836,8 @@ pub fn generate_font_sdf(available_chars: &str) -> FontSDF {
                 let current_width = shape_builder.width(PIX_HEIGHT);
                 positions.insert(c, (shape_builder, w, (x, y)));
                 let x = x + current_width;
+                // This puts all characters in a long strip
+                // Not ideal, some precision loss might occur
                 let width = if x > width {
                     width + current_width
                 } else {

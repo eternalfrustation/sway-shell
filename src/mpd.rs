@@ -1,6 +1,6 @@
 use std::{env::VarError, os::unix::net::UnixStream, path::PathBuf, sync::Arc};
 
-use mpd::{Client, Idle, Subsystem};
+use mpd::{Idle, Subsystem};
 use tokio::{
     runtime::Runtime,
     sync::mpsc::{Sender, channel, error::SendError},
@@ -42,13 +42,40 @@ impl From<SendError<Message>> for MpdError {
     }
 }
 
+async fn song_duration_generator(output: Sender<Message>, mpd_socket_conn: PathBuf) {
+    loop {
+        let conn = mpd::client::Client::new(UnixStream::connect(mpd_socket_conn.clone()).unwrap());
+        let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(1));
+        log::info!("Spawned ticker");
+        interval.set_missed_tick_behavior(MissedTickBehavior::Skip);
+
+        if let Ok(mut conn) = conn {
+            loop {
+                let status = conn.status().ok();
+                if let Some(Some(elapsed)) = status.map(|s| s.elapsed) {
+                    log::info!(
+                        "sent mpd time message with result: {:?}",
+                        output.send(Message::MpdTimeElapsed { elapsed }).await
+                    );
+                }
+                interval.tick().await;
+            }
+        } else {
+            log::error!("{:?}", conn);
+        }
+    }
+}
+
 fn mpd_generator(output: Sender<Message>, rt: Arc<Runtime>) -> Result<(), MpdError> {
     let a = PathBuf::from(std::env::var("XDG_RUNTIME_DIR")?).join("mpd/socket");
     let mut conn = mpd::client::Client::new(UnixStream::connect(a.clone())?)?;
     let status = conn.status()?;
-    let mut timed_update = None;
+    let mut timed_update = rt.spawn(song_duration_generator(output.clone(), a.clone()));
     let mut previous_state = status.state;
     output.blocking_send(Message::MpdPlayerUpdate { status })?;
+    output.blocking_send(Message::MpdSongUpdate {
+        song: conn.currentsong()?,
+    })?;
     loop {
         let events = conn.wait(&[Subsystem::Player])?;
         for event in &events {
@@ -60,38 +87,22 @@ fn mpd_generator(output: Sender<Message>, rt: Arc<Runtime>) -> Result<(), MpdErr
                             mpd::State::Play => {
                                 let a = a.clone();
                                 let output = output.clone();
-                                timed_update = Some(rt.spawn(async move {
-                                    let mut conn = mpd::client::Client::new(
-                                        UnixStream::connect(a.clone()).unwrap(),
-                                    )
-                                    .unwrap();
-                                    let mut interval =
-                                        tokio::time::interval(tokio::time::Duration::from_secs(1));
-                                        interval.set_missed_tick_behavior(MissedTickBehavior::Skip);
-                                    loop {
-                                        let status = conn.status().ok();
-                                        if let Some(Some(elapsed)) = status.map(|s| s.elapsed) {
-                                            output.send(Message::MpdTimeElapsed { elapsed }).await;
-                                        }
-                                        interval.tick().await;
-                                    }
-                                }));
+                                timed_update =
+                                    rt.spawn(song_duration_generator(output.clone(), a.clone()));
                             }
                             mpd::State::Stop => {
-                                if let Some(ref timed_update) = timed_update {
-                                    timed_update.abort();
-                                }
+                                timed_update.abort();
                             }
                             mpd::State::Pause => {
-                                if let Some(ref timed_update) = timed_update {
-                                    timed_update.abort();
-                                }
+                                timed_update.abort();
                             }
                         }
                         rt.spawn(async {});
                         previous_state = status.state;
                     }
                     output.blocking_send(Message::MpdPlayerUpdate { status })?;
+                    let song = conn.currentsong()?;
+                    output.blocking_send(Message::MpdSongUpdate { song })?;
                 }
                 _ => {}
             }

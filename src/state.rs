@@ -1,7 +1,7 @@
 use std::time::Duration;
 
 use mpd::Status;
-use tokio::sync::mpsc::{Receiver, Sender};
+use tokio::sync::mpsc::Sender;
 use tokio_stream::StreamExt;
 
 use crate::sway::Workspace;
@@ -10,6 +10,7 @@ use crate::sway::Workspace;
 pub struct State {
     pub workspaces: Vec<Workspace>,
     pub mpd_status: Option<Status>,
+    pub mpd_current_song: Option<mpd::Song>,
 }
 
 #[derive(Debug)]
@@ -36,6 +37,9 @@ pub enum Message {
     MpdPlayerUpdate {
         status: mpd::Status,
     },
+    MpdSongUpdate {
+        song: Option<mpd::Song>,
+    },
     MpdTimeElapsed {
         elapsed: Duration,
     },
@@ -46,6 +50,7 @@ impl State {
         Self {
             workspaces: Vec::new(),
             mpd_status: None,
+            mpd_current_song: None,
         }
     }
 
@@ -120,6 +125,9 @@ impl State {
                 if let Some(ref mut mpd_stats) = self.mpd_status {
                     mpd_stats.elapsed = Some(elapsed);
                 }
+            }
+            Message::MpdSongUpdate { song } => {
+                self.mpd_current_song = song;
             }
         }
     }

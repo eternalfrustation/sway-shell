@@ -1,7 +1,3 @@
-use std::collections::HashMap;
-use std::fs::File;
-use std::hash::RandomState;
-use std::io::Write;
 use std::mem;
 use std::{borrow::Cow, ptr::NonNull, sync::Arc};
 
@@ -18,9 +14,8 @@ use tokio::{
 use wayland_client::{Proxy, protocol::wl_surface::WlSurface};
 use wgpu::wgt::TextureDataOrder;
 use wgpu::{
-    AddressMode, DeviceDescriptor, Extent3d, Features, FilterMode, SamplerDescriptor,
-    TextureDescriptor, TextureDimension, TextureFormat, TextureUsages, TextureViewDescriptor,
-    TextureViewDimension,
+    AddressMode, DeviceDescriptor, Extent3d, FilterMode, SamplerDescriptor, TextureDescriptor,
+    TextureDimension, TextureFormat, TextureUsages, TextureViewDescriptor, TextureViewDimension,
 };
 use wgpu::{Buffer, BufferDescriptor, IndexFormat, PresentMode, RenderPipeline, util::DeviceExt};
 
@@ -223,7 +218,8 @@ impl Renderer {
 
         // Loading the font
         // Need to write custom code for this part
-        let font_sdf = generate_font_sdf("1234567890qwertyuiopasdfghjklzxcvbnm");
+        let font_sdf =
+            generate_font_sdf("1234567890qwertyuiopasdfghjklzxcvbnmQWERTYUIOPASDFGHJKLZXCVBNM  ");
         // Load the shaders from disk
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: None,
@@ -430,7 +426,7 @@ impl Renderer {
         let texture_view = surface_texture
             .texture
             .create_view(&wgpu::TextureViewDescriptor::default());
-        let (offset, mut instance_data) = state
+        let (mut offset, mut instance_data) = state
             .workspaces
             .iter()
             .flat_map(|w| {
@@ -450,7 +446,7 @@ impl Renderer {
                 |(offset, mut instances), (is_visible, width, char_glyph)| {
                     instances.push(Instance {
                         position: [offset, 0.],
-                        scale: [1., 1.],
+                        scale: [width as f32, 1.],
                         fg: if is_visible { 0xff0000ff } else { 0xffff0000 },
                         bg: 0x00000000,
                         tex_offset: [char_glyph.min.x, char_glyph.min.y],
@@ -471,14 +467,39 @@ impl Renderer {
                     tex_scale: [1., 1.],
                     tex_offset: [0., 0.],
                 });
+                offset += progress * MPD_PROGRESS_WIDTH;
                 instance_data.push(Instance {
-                    position: [offset + progress * MPD_PROGRESS_WIDTH, 0.],
+                    position: [offset, 0.],
                     scale: [(1. - progress) * MPD_PROGRESS_WIDTH, 1.],
                     bg: 0xff0000ff,
                     fg: 0xff0000ff,
                     tex_scale: [1., 1.],
                     tex_offset: [0., 0.],
                 });
+                offset += (1. - progress) * MPD_PROGRESS_WIDTH;
+            }
+        }
+
+        if let Some(Some(ref song_name)) = state
+            .mpd_current_song
+            .as_ref()
+            .map(|song| song.title.clone())
+        {
+            for (width, glyph) in song_name
+                .chars()
+                .flat_map(|c| self.font_sdf.locations.get(&c))
+            {
+
+                instance_data.push(Instance {
+                    position: [offset, 0.],
+                    scale: [*width as f32, 1.],
+                    fg: 0xffffffff,
+                    bg: 0xff000000,
+                    tex_offset: [glyph.min.x, glyph.min.y],
+                    tex_scale: [glyph.width(), glyph.height()],
+                });
+                offset += *width as f32;
+
             }
         }
 

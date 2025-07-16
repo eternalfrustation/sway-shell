@@ -4,7 +4,7 @@ use tokio_stream::Stream;
 use swayipc::{Event, EventType, Node, Rect, WorkspaceChange};
 use tokio::{
     runtime::Runtime,
-    sync::mpsc::{Receiver, Sender, channel, error::SendError},
+    sync::mpsc::{Sender, channel, error::SendError},
 };
 
 use crate::state::Message;
@@ -136,7 +136,7 @@ fn sway_generator(output: Sender<Message>) -> Result<(), SwayError> {
                                 output.blocking_send(Message::WorkspaceChangeVisiblity {
                                     id: workspace.id,
                                     visible: true,
-                                });
+                                })?;
                             };
 
                             if let Some(workspace) = workspace_event.old {
@@ -199,10 +199,16 @@ pub fn sway_subscription(rt: Arc<Runtime>) -> impl Stream<Item = Message> {
     let (sender, receiver) = channel(1);
     rt.spawn_blocking(move || {
         loop {
-            log::error!(
-                "Sway subscription event loop returned, this should never happen trying to reconnect {:?}",
-                sway_generator(sender.clone())
-            )
+            match 
+            sway_generator(sender.clone()) {
+                Ok(()) => {},
+                Err(e) => {
+                    log::error!(
+                        "Sway subscription event loop returned, this should never happen trying to reconnect {:?}", e
+                    );
+                }
+                ,
+            }
         }
     });
     tokio_stream::wrappers::ReceiverStream::new(receiver)
