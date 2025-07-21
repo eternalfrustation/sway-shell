@@ -32,7 +32,7 @@ fn main() {
     // Currently using the merge method, ideally would use a StreamMap
     let state_event_loop_handle = rt.spawn(state.run_event_loop(sway_stream.merge(mpd_stream), render_sender));
     // IDK how else to do this
-    const HEIGHT: u32 = 20;
+    const HEIGHT: u32 = 200;
     let (display, event_queue) = Display::new(HEIGHT, display_sender);
     let wayland_conn = display.wayland_conn.clone();
     let wayland_surface = display.wayland_surface.clone();

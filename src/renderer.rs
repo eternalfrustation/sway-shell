@@ -455,7 +455,7 @@ impl Renderer {
                     (offset + width as f32, instances)
                 },
             );
-        const MPD_PROGRESS_WIDTH: f32 = 10.;
+        const MPD_PROGRESS_WIDTH: f32 = 1.;
         if let Some(ref mpd) = state.mpd_status {
             if let Some((elapsed, duration)) = mpd.elapsed.zip(mpd.duration) {
                 let progress = elapsed.as_secs_f32() / duration.as_secs_f32();

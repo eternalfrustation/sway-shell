@@ -6,6 +6,10 @@ use std::{
 };
 
 use ab_glyph::{Font, FontRef, Outline, OutlineCurve, Point, Rect};
+use svg::{
+    Document,
+    node::element::{Path, path::Data},
+};
 
 pub const FONT_DATA: &[u8] = include_bytes!("test_font.ttf");
 
@@ -45,7 +49,7 @@ impl Add<f64> for Vector {
     }
 }
 
-const EPSILON: f64 = 1e-15;
+const EPSILON: f64 = 3e-15;
 
 impl<F: Into<f64>> Mul<F> for Vector {
     type Output = Self;
@@ -97,6 +101,9 @@ impl Vector {
 
     fn norm(self) -> Self {
         let mag = self.mag();
+        if mag.abs() < EPSILON {
+            return Self { x: 0., y: 0. };
+        }
         Self {
             x: self.x / mag,
             y: self.y / mag,
@@ -188,6 +195,14 @@ impl Segment {
             Segment::BEZ3(bez3) => bez3.sdistance(p),
         }
     }
+
+    fn is_length_gt(&self, v: f64) -> bool {
+        match self {
+            Segment::LINE(line) => line.is_length_gt(v),
+            Segment::BEZ2(bez2) => bez2.is_length_gt(v),
+            Segment::BEZ3(bez3) => bez3.is_length_gt(v),
+        }
+    }
 }
 
 impl Add<Vector> for Segment {
@@ -261,11 +276,19 @@ impl Line {
         }
         let t = ((p - self.0).dot(self.1 - self.0) / (self.1 - self.0).dot(self.1 - self.0))
             .clamp(0., 1.);
-        let p_prime = self.0 * (1. - t) + self.1 * t;
+        let p_prime = self.eval(t);
         p_prime
             .sq_dist(p)
             .sqrt()
             .copysign((self.1 - self.0).cross(p - p_prime))
+    }
+
+    fn is_length_gt(&self, v: f64) -> bool {
+        (self.1 - self.0).mag() > v
+    }
+
+    fn eval(&self, t: f64) -> Vector {
+        self.0 + (self.1 - self.0) * t
     }
 }
 
@@ -305,15 +328,37 @@ impl Bez2 {
             .filter(|r| *r > 0. && *r < 1.)
             .chain([0., 1.].into_iter())
             .map(|r| {
-                let p_prime = p2 * r * r + p1 * 2. * r + self.0;
+                let p_prime = self.eval(r);
 
-                p_prime
-                    .sq_dist(p)
-                    .sqrt()
-                    .copysign((p2 * 2. * r + p1 * 2.).cross(p - p_prime))
+                p_prime.sq_dist(p).sqrt().copysign(
+                    ((self.1 - self.0) * 2. * (1. - r) + (self.2 - self.1) * 2. * r)
+                        .cross(p - p_prime),
+                )
             })
             .min_by(|x, y| x.abs().total_cmp(&y.abs()));
         dist.unwrap()
+    }
+
+    fn eval(&self, t: f64) -> Vector {
+        let p0 = self.0 - self.1;
+        let p1 = self.2 - self.1;
+        self.1 + p0 * (1. - t).powi(2) + p1 * t.powi(2)
+    }
+
+    fn is_length_gt(&self, v: f64) -> bool {
+        let mut current_length = 0.;
+        let mut prev_point = self.0;
+        let mut t = 0.;
+        while t < 1. {
+            t += 0.3;
+            let current_point = self.eval(t);
+            current_length += (current_point - prev_point).mag();
+            if current_length > v {
+                return true;
+            }
+            prev_point = current_point;
+        }
+        false
     }
 }
 
@@ -448,6 +493,29 @@ impl Bez3 {
                 min_dist
             }
         })
+    }
+
+    fn is_length_gt(&self, v: f64) -> bool {
+        let mut current_length = 0.;
+        let mut prev_point = self.0;
+        let mut t = 0.;
+        while t < 1. {
+            t += 0.25;
+            let current_point = self.eval(t);
+            current_length += (current_point - prev_point).mag();
+            if current_length > v {
+                return true;
+            }
+            prev_point = current_point;
+        }
+        false
+    }
+
+    fn eval(&self, t: f64) -> Vector {
+        self.0 * (1. - t).powi(3)
+            + self.1 * 3. * (1. - t).powi(2) * t
+            + self.2 * 3 * (1. - t) * t.powi(2)
+            + self.3 * t.powi(3)
     }
 }
 
@@ -660,6 +728,7 @@ impl Edge {
     /// Checks if the segments are continously connected, order matters
     /// It is assumed that s0's end and s1's start are connected
     fn is_continous(s0: &Segment, s1: &Segment) -> bool {
+        const EPSILON: f64 = 0.1;
         let s0_end_direction = s0.end_direction().norm();
         let s1_start_direction = s1.start_direction().norm();
         s0_end_direction.cross(s1_start_direction).abs() < EPSILON
@@ -710,6 +779,48 @@ struct Shape<E> {
     contours: Vec<Contour<E>>,
 }
 
+impl Shape<Edge> {
+    fn render_test_svg(&self, idx: usize) {
+        let mut document = Document::new().set("viewBox", (0, 0, 1000, 1000));
+        for (i, contour) in self.contours.iter().enumerate() {
+            let width = 1. + 5. * i as f64 / self.contours.len() as f64;
+
+            for (j, edge) in contour.edges.iter().enumerate() {
+                let mut data = Data::new();
+                let hue = j as f64 / contour.edges.len() as f64;
+
+                for segment in edge.segments.iter() {
+                    let segment = *segment * 500.;
+                    match segment {
+                        Segment::LINE(line) => {
+                            data = data.move_to((line.0.x, line.0.y));
+                            data = data.line_to((line.1.x, line.1.y));
+                        }
+                        Segment::BEZ2(bez2) => {
+                            data = data.move_to((bez2.0.x, bez2.0.y));
+                            data =
+                                data.quadratic_curve_to((bez2.1.x, bez2.1.y, bez2.2.x, bez2.2.y));
+                        }
+                        Segment::BEZ3(bez3) => {
+                            data = data.move_to((bez3.0.x, bez3.0.y));
+                            data = data.cubic_curve_to((
+                                bez3.1.x, bez3.1.y, bez3.2.x, bez3.2.y, bez3.3.x, bez3.3.y,
+                            ));
+                        }
+                    }
+                }
+                let path = Path::new()
+                    .set("fill", "none")
+                    .set("stroke", format!("hsl({}, 100%, 50%)", hue * 180.))
+                    .set("stroke-width", width)
+                    .set("d", data);
+                document = document.add(path);
+            }
+        }
+        svg::save(format!("image-{idx}.svg"), &document).unwrap();
+    }
+}
+
 impl From<Vec<Segment>> for Shape<Edge> {
     /// Assumes that the Segments are in order
     fn from(value: Vec<Segment>) -> Self {
@@ -753,7 +864,7 @@ struct ShapeBuilder {
 }
 
 impl ShapeBuilder {
-    fn new(outline: Outline) -> Self {
+    fn new(outline: Outline, c: char) -> Self {
         let scale = outline.bounds.height().abs() as f64;
         let segments: Vec<Segment> = outline
             .curves
@@ -762,6 +873,7 @@ impl ShapeBuilder {
             .map(|c| ((Segment::from(c.clone())) + (Vector::from(outline.bounds.min))) / scale)
             .collect();
         let shape: Shape<Edge> = segments.into();
+        shape.render_test_svg(c as usize);
         Self {
             shape: shape.into(),
             w: outline.bounds.width().abs() as f64 / scale,
@@ -822,13 +934,13 @@ impl ShapeBuilder {
 pub fn generate_font_sdf(available_chars: &str) -> FontSDF {
     let font_ref = FontRef::try_from_slice(FONT_DATA).expect("The font to be a valid file");
 
-    const PIX_HEIGHT: usize = 20;
+    const PIX_HEIGHT: usize = 48;
     // TODO: Iterate and render and the characters instead of only one
     let (outlines, (width, height), _) = available_chars
         .chars()
         .map(|c| (c, font_ref.glyph_id(c)))
         .flat_map(|(c, id)| font_ref.outline(id).map(|outline| (c, outline)))
-        .map(|(c, outline)| (c, ShapeBuilder::new(outline)))
+        .map(|(c, outline)| (c, ShapeBuilder::new(outline, c)))
         .map(|(c, shape_builder)| (c, shape_builder.width(PIX_HEIGHT), shape_builder))
         .fold(
             (HashMap::new(), (0, 0), (0, 0)),
