@@ -1,12 +1,12 @@
 #![feature(sort_floats)]
 #![feature(iter_array_chunks)]
 
+pub mod font;
 pub mod layer;
+pub mod mpd;
 pub mod renderer;
 pub mod state;
 pub mod sway;
-pub mod mpd;
-pub mod font;
 
 use layer::Display;
 use mpd::mpd_subscription;
@@ -15,7 +15,7 @@ use std::sync::Arc;
 use tokio::sync::mpsc::channel;
 
 use tokio::runtime::Runtime;
-use tokio_stream::StreamExt;
+use tokio_stream::{StreamExt, StreamMap};
 
 use state::State;
 use sway::sway_subscription;
@@ -24,16 +24,22 @@ fn main() {
     pretty_env_logger::init();
     let rt = Arc::new(Runtime::new().expect("To be able to initalize a tokio runtime"));
 
+    let mut streams = StreamMap::new();
+
     let state = State::new();
-    let sway_stream = sway_subscription(rt.clone());
-    let mpd_stream = mpd_subscription(rt.clone());
     let (render_sender, render_receiver) = channel(1);
+    let (state_sender, state_receiver) = channel(1);
+    let state_stream = tokio_stream::wrappers::ReceiverStream::new(state_receiver);
+    streams.insert("sway", sway_subscription(rt.clone()));
+    streams.insert("mpd", mpd_subscription(rt.clone()));
+    streams.insert("display", state_stream);
     let (display_sender, display_receiver) = channel(1);
     // Currently using the merge method, ideally would use a StreamMap
-    let state_event_loop_handle = rt.spawn(state.run_event_loop(sway_stream.merge(mpd_stream), render_sender));
+    let state_event_loop_handle =
+        rt.spawn(state.run_event_loop(streams.map(|(_, v)| v), render_sender));
     // IDK how else to do this
     const HEIGHT: u32 = 200;
-    let (display, event_queue) = Display::new(HEIGHT, display_sender);
+    let (display, event_queue) = Display::new(HEIGHT, display_sender, state_sender);
     let wayland_conn = display.wayland_conn.clone();
     let wayland_surface = display.wayland_surface.clone();
 

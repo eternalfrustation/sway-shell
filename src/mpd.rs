@@ -70,8 +70,12 @@ fn mpd_generator(output: Sender<Message>, rt: Arc<Runtime>) -> Result<(), MpdErr
     let a = PathBuf::from(std::env::var("XDG_RUNTIME_DIR")?).join("mpd/socket");
     let mut conn = mpd::client::Client::new(UnixStream::connect(a.clone())?)?;
     let status = conn.status()?;
-    let mut timed_update = rt.spawn(song_duration_generator(output.clone(), a.clone()));
     let mut previous_state = status.state;
+    let mut timed_update = if previous_state == mpd::State::Play {
+        Some(rt.spawn(song_duration_generator(output.clone(), a.clone())))
+    } else {
+        None
+    };
     output.blocking_send(Message::MpdPlayerUpdate { status })?;
     output.blocking_send(Message::MpdSongUpdate {
         song: conn.currentsong()?,
@@ -82,19 +86,27 @@ fn mpd_generator(output: Sender<Message>, rt: Arc<Runtime>) -> Result<(), MpdErr
             match event {
                 Subsystem::Player => {
                     let status = conn.status()?;
+                    dbg!(&timed_update);
                     if status.state != previous_state {
                         match status.state {
                             mpd::State::Play => {
                                 let a = a.clone();
                                 let output = output.clone();
-                                timed_update =
-                                    rt.spawn(song_duration_generator(output.clone(), a.clone()));
+                                timed_update = Some(
+                                    rt.spawn(song_duration_generator(output.clone(), a.clone())),
+                                );
                             }
                             mpd::State::Stop => {
-                                timed_update.abort();
+                                if let Some(timed_update) = timed_update {
+                                    timed_update.abort()
+                                }
+                                timed_update = None;
                             }
                             mpd::State::Pause => {
-                                timed_update.abort();
+                                if let Some(timed_update) = timed_update {
+                                    timed_update.abort()
+                                }
+                                timed_update = None;
                             }
                         }
                         rt.spawn(async {});
@@ -110,7 +122,7 @@ fn mpd_generator(output: Sender<Message>, rt: Arc<Runtime>) -> Result<(), MpdErr
     }
 }
 
-pub fn mpd_subscription(rt: Arc<Runtime>) -> impl Stream<Item = Message> {
+pub fn mpd_subscription(rt: Arc<Runtime>) -> tokio_stream::wrappers::ReceiverStream<Message> {
     let (sender, receiver) = channel(1);
     rt.clone().spawn_blocking(move || {
         loop {

@@ -1,9 +1,6 @@
 use std::sync::Arc;
 
-use tokio::{
-    sync::mpsc::Sender,
-    task::block_in_place,
-};
+use tokio::{sync::mpsc::Sender, task::block_in_place};
 
 use wayland_client::{
     Connection, Dispatch, DispatchError, EventQueue, Proxy, QueueHandle,
@@ -23,6 +20,8 @@ use wayland_client::{
 
 use smithay_client_toolkit::{
     compositor::{CompositorHandler, CompositorState, SurfaceData},
+    delegate_compositor, delegate_keyboard, delegate_layer, delegate_output, delegate_pointer,
+    delegate_registry, delegate_seat, delegate_shm,
     globals::GlobalData,
     output::{OutputData, OutputHandler, OutputState},
     reexports::{
@@ -40,6 +39,7 @@ use smithay_client_toolkit::{
         },
     },
     registry::{ProvidesRegistryState, RegistryHandler, RegistryState},
+    registry_handlers,
     seat::{
         Capability, SeatData, SeatHandler, SeatState,
         keyboard::{KeyEvent, KeyboardData, KeyboardHandler, Keysym, Modifiers},
@@ -57,6 +57,7 @@ use smithay_client_toolkit::{
     },
 };
 
+use crate::{font::Vector, state::Message};
 
 pub enum DisplayMessage {
     CanDraw,
@@ -79,11 +80,16 @@ pub struct Display {
     pub layer: LayerSurface,
     pub keyboard: Option<WlKeyboard>,
     pub pointer: Option<WlPointer>,
-    pub sender: Sender<DisplayMessage>,
+    pub display_sender: Sender<DisplayMessage>,
+    pub state_sender: Sender<Message>,
 }
 
 impl Display {
-    pub fn new(height: u32, sender: Sender<DisplayMessage>) -> (Self, EventQueue<Self>) {
+    pub fn new(
+        height: u32,
+        display_sender: Sender<DisplayMessage>,
+        state_sender: Sender<Message>,
+    ) -> (Self, EventQueue<Self>) {
         let wayland_conn =
             Connection::connect_to_env().expect("To be able to connect to the compositor");
         let (globals, event_queue) = registry_queue_init(&wayland_conn)
@@ -114,7 +120,8 @@ impl Display {
 
         (
             Display {
-                sender,
+                display_sender,
+                state_sender,
                 wayland_surface,
                 wayland_conn,
                 compositor,
@@ -180,10 +187,11 @@ impl LayerShellHandler for Display {
         self.width = new_width;
         self.height = new_height;
         block_in_place(|| {
-            self.sender.blocking_send(DisplayMessage::Configure {
-                width: self.width,
-                height: self.height,
-            })
+            self.display_sender
+                .blocking_send(DisplayMessage::Configure {
+                    width: self.width,
+                    height: self.height,
+                })
         })
         .expect("To be able to send a display message when configuration is requested");
         layer.set_size(self.width, self.height);
@@ -262,10 +270,11 @@ impl OutputHandler for Display {
             self.layer.set_size(self.width, self.height);
             self.layer.set_exclusive_zone(self.height as i32);
             block_in_place(|| {
-                self.sender.blocking_send(DisplayMessage::Configure {
-                    width: self.width,
-                    height: self.height,
-                })
+                self.display_sender
+                    .blocking_send(DisplayMessage::Configure {
+                        width: self.width,
+                        height: self.height,
+                    })
             })
             .expect("To be able to send a display message when new output is created");
         }
@@ -376,12 +385,27 @@ impl PointerHandler for Display {
                 Motion { .. } => {}
                 Press { button, .. } => {
                     log::info!("Press {:x} @ {:?}", button, event.position);
-                    self.layer
-                        .wl_surface()
-                        .frame(qh, self.layer.wl_surface().clone());
+                    block_in_place(|| {
+                        self.state_sender.blocking_send(Message::PointerPress {
+                            pos: Vector {
+                                x: event.position.0,
+                                y: event.position.1,
+                            },
+                        })
+                    })
+                    .expect("To be able to send a state message when mouse is clicked");
                 }
                 Release { button, .. } => {
                     log::info!("Release {:x} @ {:?}", button, event.position);
+                    block_in_place(|| {
+                        self.state_sender.blocking_send(Message::PointerRelease {
+                            pos: Vector {
+                                x: event.position.0,
+                                y: event.position.1,
+                            },
+                        })
+                    })
+                    .expect("To be able to send a state message when mouse is released");
                 }
                 Axis {
                     horizontal,
@@ -463,295 +487,21 @@ impl KeyboardHandler for Display {
     }
 }
 
-// All the dispatch handler macros, inlined
-impl Dispatch<WlCompositor, GlobalData> for Display {
-    fn event(
-        state: &mut Self,
-        proxy: &WlCompositor,
-        event: <WlCompositor as Proxy>::Event,
-        data: &GlobalData,
-        conn: &Connection,
-        qhandle: &QueueHandle<Self>,
-    ) {
-        <CompositorState as Dispatch<WlCompositor, GlobalData, Self>>::event(
-            state, proxy, event, data, conn, qhandle,
-        )
-    }
-    fn event_created_child(opcode: u16, qhandle: &QueueHandle<Self>) -> Arc<dyn ObjectData> {
-        <CompositorState as Dispatch<WlCompositor, GlobalData, Self>>::event_created_child(
-            opcode, qhandle,
-        )
-    }
-}
-impl Dispatch<WlCallback, WlSurface> for Display {
-    fn event(
-        state: &mut Self,
-        proxy: &WlCallback,
-        event: <WlCallback as Proxy>::Event,
-        data: &WlSurface,
-        conn: &Connection,
-        qhandle: &QueueHandle<Self>,
-    ) {
-        <CompositorState as Dispatch<WlCallback, WlSurface, Self>>::event(
-            state, proxy, event, data, conn, qhandle,
-        )
-    }
-    fn event_created_child(opcode: u16, qhandle: &QueueHandle<Self>) -> Arc<dyn ObjectData> {
-        <CompositorState as Dispatch<WlCallback, WlSurface, Self>>::event_created_child(
-            opcode, qhandle,
-        )
-    }
-}
-impl Dispatch<WlSurface, SurfaceData> for Display {
-    fn event(
-        state: &mut Self,
-        proxy: &WlSurface,
-        event: <WlSurface as Proxy>::Event,
-        data: &SurfaceData,
-        conn: &Connection,
-        qhandle: &QueueHandle<Self>,
-    ) {
-        <CompositorState as Dispatch<WlSurface, SurfaceData, Self>>::event(
-            state, proxy, event, data, conn, qhandle,
-        )
-    }
-    fn event_created_child(opcode: u16, qhandle: &QueueHandle<Self>) -> Arc<dyn ObjectData> {
-        <CompositorState as Dispatch<WlSurface, SurfaceData, Self>>::event_created_child(
-            opcode, qhandle,
-        )
-    }
-}
-impl Dispatch<WlOutput, OutputData> for Display {
-    fn event(
-        state: &mut Self,
-        proxy: &WlOutput,
-        event: <WlOutput as Proxy>::Event,
-        data: &OutputData,
-        conn: &Connection,
-        qhandle: &QueueHandle<Self>,
-    ) {
-        <OutputState as Dispatch<WlOutput, OutputData, Self>>::event(
-            state, proxy, event, data, conn, qhandle,
-        )
-    }
-    fn event_created_child(opcode: u16, qhandle: &QueueHandle<Self>) -> Arc<dyn ObjectData> {
-        <OutputState as Dispatch<WlOutput, OutputData, Self>>::event_created_child(opcode, qhandle)
-    }
-}
-impl Dispatch<ZxdgOutputManagerV1, GlobalData> for Display {
-    fn event(
-        state: &mut Self,
-        proxy: &ZxdgOutputManagerV1,
-        event: <ZxdgOutputManagerV1 as Proxy>::Event,
-        data: &GlobalData,
-        conn: &Connection,
-        qhandle: &QueueHandle<Self>,
-    ) {
-        <OutputState as Dispatch<ZxdgOutputManagerV1, GlobalData, Self>>::event(
-            state, proxy, event, data, conn, qhandle,
-        )
-    }
-    fn event_created_child(opcode: u16, qhandle: &QueueHandle<Self>) -> Arc<dyn ObjectData> {
-        <OutputState as Dispatch<ZxdgOutputManagerV1, GlobalData, Self>>::event_created_child(
-            opcode, qhandle,
-        )
-    }
-}
-impl Dispatch<ZxdgOutputV1, OutputData> for Display {
-    fn event(
-        state: &mut Self,
-        proxy: &ZxdgOutputV1,
-        event: <ZxdgOutputV1 as Proxy>::Event,
-        data: &OutputData,
-        conn: &Connection,
-        qhandle: &QueueHandle<Self>,
-    ) {
-        <OutputState as Dispatch<ZxdgOutputV1, OutputData, Self>>::event(
-            state, proxy, event, data, conn, qhandle,
-        )
-    }
-    fn event_created_child(opcode: u16, qhandle: &QueueHandle<Self>) -> Arc<dyn ObjectData> {
-        <OutputState as Dispatch<ZxdgOutputV1, OutputData, Self>>::event_created_child(
-            opcode, qhandle,
-        )
-    }
-}
+delegate_compositor!(Display);
+delegate_output!(Display);
 
-impl Dispatch<WlSeat, SeatData> for Display {
-    fn event(
-        state: &mut Self,
-        proxy: &WlSeat,
-        event: <WlSeat as Proxy>::Event,
-        data: &SeatData,
-        conn: &Connection,
-        qhandle: &QueueHandle<Self>,
-    ) {
-        <SeatState as Dispatch<WlSeat, SeatData, Self>>::event(
-            state, proxy, event, data, conn, qhandle,
-        )
-    }
-    fn event_created_child(opcode: u16, qhandle: &QueueHandle<Self>) -> Arc<dyn ObjectData> {
-        <SeatState as Dispatch<WlSeat, SeatData, Self>>::event_created_child(opcode, qhandle)
-    }
-}
+delegate_seat!(Display);
+delegate_keyboard!(Display);
+delegate_pointer!(Display);
 
-impl Dispatch<WlKeyboard, KeyboardData<Display>> for Display {
-    fn event(
-        state: &mut Self,
-        proxy: &WlKeyboard,
-        event: <WlKeyboard as Proxy>::Event,
-        data: &KeyboardData<Display>,
-        conn: &Connection,
-        qhandle: &QueueHandle<Self>,
-    ) {
-        <SeatState as Dispatch<WlKeyboard, KeyboardData<Display>, Self>>::event(
-            state, proxy, event, data, conn, qhandle,
-        )
-    }
-    fn event_created_child(opcode: u16, qhandle: &QueueHandle<Self>) -> Arc<dyn ObjectData> {
-        <SeatState as Dispatch<WlKeyboard, KeyboardData<Display>, Self>>::event_created_child(
-            opcode, qhandle,
-        )
-    }
-}
-impl Dispatch<WpCursorShapeManagerV1, GlobalData> for Display {
-    fn event(
-        state: &mut Self,
-        proxy: &WpCursorShapeManagerV1,
-        event: <WpCursorShapeManagerV1 as Proxy>::Event,
-        data: &GlobalData,
-        conn: &Connection,
-        qhandle: &QueueHandle<Self>,
-    ) {
-        <CursorShapeManager as Dispatch<WpCursorShapeManagerV1, GlobalData, Self>>::event(
-            state, proxy, event, data, conn, qhandle,
-        )
-    }
-    fn event_created_child(opcode: u16, qhandle: &QueueHandle<Self>) -> Arc<dyn ObjectData> {
-        <CursorShapeManager as Dispatch<WpCursorShapeManagerV1,GlobalData,Self>>::event_created_child(opcode,qhandle)
-    }
-}
-impl Dispatch<WpCursorShapeDeviceV1, GlobalData> for Display {
-    fn event(
-        state: &mut Self,
-        proxy: &WpCursorShapeDeviceV1,
-        event: <WpCursorShapeDeviceV1 as Proxy>::Event,
-        data: &GlobalData,
-        conn: &Connection,
-        qhandle: &QueueHandle<Self>,
-    ) {
-        <CursorShapeManager as Dispatch<WpCursorShapeDeviceV1, GlobalData, Self>>::event(
-            state, proxy, event, data, conn, qhandle,
-        )
-    }
-    fn event_created_child(opcode: u16, qhandle: &QueueHandle<Self>) -> Arc<dyn ObjectData> {
-        <CursorShapeManager as Dispatch<WpCursorShapeDeviceV1,GlobalData,Self>>::event_created_child(opcode,qhandle)
-    }
-}
-impl Dispatch<WlPointer, PointerData> for Display {
-    fn event(
-        state: &mut Self,
-        proxy: &WlPointer,
-        event: <WlPointer as Proxy>::Event,
-        data: &PointerData,
-        conn: &Connection,
-        qhandle: &QueueHandle<Self>,
-    ) {
-        <SeatState as Dispatch<WlPointer, PointerData, Self>>::event(
-            state, proxy, event, data, conn, qhandle,
-        )
-    }
-    fn event_created_child(opcode: u16, qhandle: &QueueHandle<Self>) -> Arc<dyn ObjectData> {
-        <SeatState as Dispatch<WlPointer, PointerData, Self>>::event_created_child(opcode, qhandle)
-    }
-}
+delegate_layer!(Display);
 
-impl Dispatch<ZwlrLayerShellV1, GlobalData> for Display {
-    fn event(
-        state: &mut Self,
-        proxy: &ZwlrLayerShellV1,
-        event: <ZwlrLayerShellV1 as Proxy>::Event,
-        data: &GlobalData,
-        conn: &Connection,
-        qhandle: &QueueHandle<Self>,
-    ) {
-        <LayerShell as Dispatch<ZwlrLayerShellV1, GlobalData, Self>>::event(
-            state, proxy, event, data, conn, qhandle,
-        )
-    }
-    fn event_created_child(opcode: u16, qhandle: &QueueHandle<Self>) -> Arc<dyn ObjectData> {
-        <LayerShell as Dispatch<ZwlrLayerShellV1, GlobalData, Self>>::event_created_child(
-            opcode, qhandle,
-        )
-    }
-}
-impl Dispatch<ZwlrLayerSurfaceV1, LayerSurfaceData> for Display {
-    fn event(
-        state: &mut Self,
-        proxy: &ZwlrLayerSurfaceV1,
-        event: <ZwlrLayerSurfaceV1 as Proxy>::Event,
-        data: &LayerSurfaceData,
-        conn: &Connection,
-        qhandle: &QueueHandle<Self>,
-    ) {
-        <LayerShell as Dispatch<ZwlrLayerSurfaceV1, LayerSurfaceData, Self>>::event(
-            state, proxy, event, data, conn, qhandle,
-        )
-    }
-    fn event_created_child(opcode: u16, qhandle: &QueueHandle<Self>) -> Arc<dyn ObjectData> {
-        <LayerShell as Dispatch<ZwlrLayerSurfaceV1, LayerSurfaceData, Self>>::event_created_child(
-            opcode, qhandle,
-        )
-    }
-}
-
-impl Dispatch<WlRegistry, GlobalListContents> for Display {
-    fn event(
-        state: &mut Self,
-        proxy: &WlRegistry,
-        event: <WlRegistry as Proxy>::Event,
-        data: &GlobalListContents,
-        conn: &Connection,
-        qhandle: &QueueHandle<Self>,
-    ) {
-        <RegistryState as Dispatch<WlRegistry, GlobalListContents, Self>>::event(
-            state, proxy, event, data, conn, qhandle,
-        )
-    }
-    fn event_created_child(opcode: u16, qhandle: &QueueHandle<Self>) -> Arc<dyn ObjectData> {
-        <RegistryState as Dispatch<WlRegistry, GlobalListContents, Self>>::event_created_child(
-            opcode, qhandle,
-        )
-    }
-}
+delegate_registry!(Display);
 
 impl ProvidesRegistryState for Display {
     fn registry(&mut self) -> &mut RegistryState {
         &mut self.registry_state
     }
 
-    fn runtime_add_global(
-        &mut self,
-        conn: &Connection,
-        qh: &QueueHandle<Self>,
-        name: u32,
-        interface: &str,
-        version: u32,
-    ) {
-        <OutputState as RegistryHandler<Self>>::new_global(
-            self, conn, qh, name, interface, version,
-        );
-        <SeatState as RegistryHandler<Self>>::new_global(self, conn, qh, name, interface, version);
-    }
-
-    fn runtime_remove_global(
-        &mut self,
-        conn: &Connection,
-        qh: &QueueHandle<Self>,
-        name: u32,
-        interface: &str,
-    ) {
-        <OutputState as RegistryHandler<Self>>::remove_global(self, conn, qh, name, interface);
-        <SeatState as RegistryHandler<Self>>::remove_global(self, conn, qh, name, interface);
-    }
+    registry_handlers![OutputState, SeatState];
 }

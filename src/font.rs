@@ -22,9 +22,9 @@ pub struct FontSDF {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
-struct Vector {
-    x: f64,
-    y: f64,
+pub struct Vector {
+    pub x: f64,
+    pub y: f64,
 }
 
 impl Add for Vector {
@@ -251,7 +251,7 @@ impl From<OutlineCurve> for Segment {
 }
 
 #[derive(Clone, Copy, Debug)]
-struct Line(Vector, Vector);
+pub struct Line(pub Vector, pub Vector);
 
 impl Div<f64> for Line {
     type Output = Self;

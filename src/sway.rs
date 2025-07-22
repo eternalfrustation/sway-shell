@@ -195,7 +195,7 @@ fn sway_generator(output: Sender<Message>) -> Result<(), SwayError> {
     Ok(())
 }
 
-pub fn sway_subscription(rt: Arc<Runtime>) -> impl Stream<Item = Message> {
+pub fn sway_subscription(rt: Arc<Runtime>) -> tokio_stream::wrappers::ReceiverStream<Message> {
     let (sender, receiver) = channel(1);
     rt.spawn_blocking(move || {
         loop {

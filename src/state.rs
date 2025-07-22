@@ -4,13 +4,18 @@ use mpd::Status;
 use tokio::sync::mpsc::Sender;
 use tokio_stream::StreamExt;
 
-use crate::sway::Workspace;
+use crate::{
+    font::{Line, Vector},
+    sway::Workspace,
+};
 
 #[derive(Debug, Clone)]
 pub struct State {
     pub workspaces: Vec<Workspace>,
     pub mpd_status: Option<Status>,
     pub mpd_current_song: Option<mpd::Song>,
+    pub press_position: Vector,
+    pub lines: Vec<Line>,
 }
 
 #[derive(Debug)]
@@ -43,6 +48,12 @@ pub enum Message {
     MpdTimeElapsed {
         elapsed: Duration,
     },
+    PointerPress {
+        pos: Vector,
+    },
+    PointerRelease {
+        pos: Vector,
+    },
 }
 
 impl State {
@@ -51,6 +62,8 @@ impl State {
             workspaces: Vec::new(),
             mpd_status: None,
             mpd_current_song: None,
+            press_position: Vector { x: 0., y: 0. },
+            lines: vec![],
         }
     }
 
@@ -129,6 +142,8 @@ impl State {
             Message::MpdSongUpdate { song } => {
                 self.mpd_current_song = song;
             }
+            Message::PointerPress { pos } => self.press_position = pos,
+            Message::PointerRelease { pos } => self.lines.push(Line(self.press_position, pos)),
         }
     }
 }

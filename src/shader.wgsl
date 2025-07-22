@@ -60,5 +60,5 @@ const aa_threshold : f32 = 0.02;
 @fragment
 fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
 	let s =  textureSample(r_color, r_sampler, input.tex_coords);
-	return mix(input.fg, input.bg, vec4<f32>(s.r - 0.5) / aa_threshold);
+	return mix(input.fg, input.bg, 250. * (vec4<f32>(s.r) - 0.5));
 }

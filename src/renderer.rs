@@ -219,7 +219,7 @@ impl Renderer {
         // Loading the font
         // Need to write custom code for this part
         let font_sdf =
-            generate_font_sdf("1234567890qwertyuiopasdfghjklzxcvbnmQWERTYUIOPASDFGHJKLZXCVBNM  ");
+            generate_font_sdf("QWERTYUIOPASDFGHJKLZXCVBNMqwertyuiopasdfghjklzxcvbnm1234567890[];',./<>?:\"{}+_)(*&^%$#@!~`=");
         // Load the shaders from disk
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: None,
