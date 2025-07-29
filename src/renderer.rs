@@ -1,9 +1,7 @@
-use std::fs::File;
 use std::io::Write;
 use std::mem;
 use std::{borrow::Cow, ptr::NonNull, sync::Arc};
 
-use ab_glyph::{Outline, Point, Rect};
 use raw_window_handle::{
     RawDisplayHandle, RawWindowHandle, WaylandDisplayHandle, WaylandWindowHandle,
 };
@@ -11,19 +9,18 @@ use tokio::{
     runtime::Handle,
     sync::{
         RwLock,
-        mpsc::{Receiver, channel},
+        mpsc::Receiver,
     },
 };
 use wayland_client::{Proxy, protocol::wl_surface::WlSurface};
 use wgpu::wgt::TextureDataOrder;
 use wgpu::{
-    AddressMode, DeviceDescriptor, Extent3d, FilterMode, Origin3d, SamplerDescriptor,
-    TexelCopyBufferLayout, TexelCopyTextureInfo, TextureAspect, TextureDescriptor,
+    AddressMode, DeviceDescriptor, Extent3d, FilterMode, SamplerDescriptor, TextureDescriptor,
     TextureDimension, TextureFormat, TextureUsages, TextureViewDescriptor, TextureViewDimension,
 };
 use wgpu::{Buffer, BufferDescriptor, IndexFormat, PresentMode, RenderPipeline, util::DeviceExt};
 
-use crate::font::{FontContainer, Segment, Shape, Vector};
+use crate::font::FontContainer;
 use crate::{layer::DisplayMessage, state::State};
 
 #[repr(C)]

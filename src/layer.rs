@@ -1,4 +1,3 @@
-use std::future::poll_fn;
 
 use tokio::{
     runtime::Handle,
