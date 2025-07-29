@@ -39,7 +39,7 @@ fn main() {
         rt.spawn(state.run_event_loop(streams.map(|(_, v)| v), render_sender));
     // IDK how else to do this
     const HEIGHT: u32 = 200;
-    let (display, event_queue) = Display::new(HEIGHT, display_sender, state_sender);
+    let (display, event_queue) = rt.block_on(Display::new(HEIGHT, display_sender, state_sender));
     let wayland_conn = display.wayland_conn.clone();
     let wayland_surface = display.wayland_surface.clone();
 
@@ -50,10 +50,9 @@ fn main() {
             .await;
     });
 
-    let display_event_loop_handle = rt.spawn(async move {
+    let display_event_loop_handle = rt.spawn_blocking(|| {
         display
             .run_event_loop(event_queue)
-            .await
             .expect("To never exit the event loop");
     });
 

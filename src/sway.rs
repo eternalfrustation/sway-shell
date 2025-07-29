@@ -1,5 +1,4 @@
 use std::sync::Arc;
-use tokio_stream::Stream;
 
 use swayipc::{Event, EventType, Node, Rect, WorkspaceChange};
 use tokio::{

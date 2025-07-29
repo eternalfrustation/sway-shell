@@ -6,7 +6,6 @@ use tokio::{
     sync::mpsc::{Sender, channel, error::SendError},
     time::MissedTickBehavior,
 };
-use tokio_stream::Stream;
 
 use crate::state::Message;
 
@@ -46,7 +45,6 @@ async fn song_duration_generator(output: Sender<Message>, mpd_socket_conn: PathB
     loop {
         let conn = mpd::client::Client::new(UnixStream::connect(mpd_socket_conn.clone()).unwrap());
         let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(1));
-        log::info!("Spawned ticker");
         interval.set_missed_tick_behavior(MissedTickBehavior::Skip);
 
         if let Ok(mut conn) = conn {

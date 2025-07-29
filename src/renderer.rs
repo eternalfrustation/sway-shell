@@ -1,6 +1,9 @@
+use std::fs::File;
+use std::io::Write;
 use std::mem;
 use std::{borrow::Cow, ptr::NonNull, sync::Arc};
 
+use ab_glyph::{Outline, Point, Rect};
 use raw_window_handle::{
     RawDisplayHandle, RawWindowHandle, WaylandDisplayHandle, WaylandWindowHandle,
 };
@@ -14,12 +17,13 @@ use tokio::{
 use wayland_client::{Proxy, protocol::wl_surface::WlSurface};
 use wgpu::wgt::TextureDataOrder;
 use wgpu::{
-    AddressMode, DeviceDescriptor, Extent3d, FilterMode, SamplerDescriptor, TextureDescriptor,
+    AddressMode, DeviceDescriptor, Extent3d, FilterMode, Origin3d, SamplerDescriptor,
+    TexelCopyBufferLayout, TexelCopyTextureInfo, TextureAspect, TextureDescriptor,
     TextureDimension, TextureFormat, TextureUsages, TextureViewDescriptor, TextureViewDimension,
 };
 use wgpu::{Buffer, BufferDescriptor, IndexFormat, PresentMode, RenderPipeline, util::DeviceExt};
 
-use crate::font::{FontSDF, generate_font_sdf};
+use crate::font::{FontContainer, Segment, Shape, Vector};
 use crate::{layer::DisplayMessage, state::State};
 
 #[repr(C)]
@@ -74,8 +78,8 @@ pub struct Instance {
     pub scale: [f32; 2],
     pub bg: u32,
     pub fg: u32,
-    pub tex_offset: [f32; 2],
-    pub tex_scale: [f32; 2],
+    pub curve_offset: u32,
+    pub curve_len: u32,
 }
 
 impl Instance {
@@ -116,13 +120,13 @@ impl Instance {
                     offset: mem::size_of::<[f32; 2]>() as wgpu::BufferAddress * 2
                         + mem::size_of::<u32>() as wgpu::BufferAddress * 2,
                     shader_location: 9,
-                    format: wgpu::VertexFormat::Float32x2,
+                    format: wgpu::VertexFormat::Uint32,
                 },
                 wgpu::VertexAttribute {
-                    offset: mem::size_of::<[f32; 2]>() as wgpu::BufferAddress * 3
-                        + mem::size_of::<u32>() as wgpu::BufferAddress * 2,
-                    shader_location: 10,
-                    format: wgpu::VertexFormat::Float32x2,
+                    offset: mem::size_of::<[f32; 2]>() as wgpu::BufferAddress * 2
+                        + mem::size_of::<u32>() as wgpu::BufferAddress * 3,
+                    shader_location: 9,
+                    format: wgpu::VertexFormat::Uint32,
                 },
             ],
         }
@@ -146,7 +150,7 @@ pub struct Renderer {
     pub font_config_uniform_buffer: Buffer,
     pub instance_buffer: Buffer,
     pub font_texture: wgpu::Texture,
-    pub font_sdf: FontSDF,
+    pub font_sdf: FontContainer,
 }
 
 const SQUARE: &[Vertex] = &[
@@ -218,8 +222,9 @@ impl Renderer {
 
         // Loading the font
         // Need to write custom code for this part
-        let font_sdf =
-            generate_font_sdf("QWERTYUIOPASDFGHJKLZXCVBNMqwertyuiopasdfghjklzxcvbnm1234567890[];',./<>?:\"{}+_)(*&^%$#@!~`=");
+        let font_container = FontContainer::new(
+            "QWERTYUIOPASDFGHJKLZXCVBNMqwertyuiopasdfghjklzxcvbnm1234567890[];',./<>?:\"{}+_)(*&^%$#@!~`=",
+        );
         // Load the shaders from disk
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: None,
@@ -235,12 +240,11 @@ impl Renderer {
             });
         // Start, end, smoothing
         // TODO: Convert to a struct
-        let font_config_uniform = [0.49, 0.5, 0.1];
-        let font_config_uniform_buffer =
+        let font_curves_array_buffer =
             device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
                 label: Some("Font Config Buffer"),
-                contents: bytemuck::cast_slice(&[font_config_uniform]),
-                usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+                contents: bytemuck::cast_slice(font_container.curve_offsets.data.as_slice()),
+                usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
             });
         let pipeline_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             entries: &[
@@ -274,7 +278,7 @@ impl Renderer {
                     binding: 3,
                     visibility: wgpu::ShaderStages::FRAGMENT,
                     ty: wgpu::BindingType::Buffer {
-                        ty: wgpu::BufferBindingType::Uniform,
+                        ty: wgpu::BufferBindingType::Storage { read_only: true },
                         has_dynamic_offset: false,
                         min_binding_size: None,
                     },
@@ -289,34 +293,36 @@ impl Renderer {
             address_mode_u: AddressMode::ClampToEdge,
             address_mode_v: AddressMode::ClampToEdge,
             address_mode_w: AddressMode::ClampToEdge,
-            mag_filter: FilterMode::Linear,
-            min_filter: FilterMode::Linear,
-            mipmap_filter: FilterMode::Linear,
+            mag_filter: FilterMode::Nearest,
+            min_filter: FilterMode::Nearest,
+            mipmap_filter: FilterMode::Nearest,
             lod_min_clamp: 1.,
             lod_max_clamp: 1.,
             compare: None,
             anisotropy_clamp: 1,
             border_color: None,
         });
+
         let font_texture = device.create_texture_with_data(
             &queue,
             &TextureDescriptor {
                 label: Some("Font Atlas texture"),
                 size: Extent3d {
-                    width: font_sdf.width,
-                    height: font_sdf.height,
+                    width: font_container.points_texture.width,
+                    height: font_container.points_texture.height,
                     depth_or_array_layers: 1,
                 },
                 mip_level_count: 1,
                 sample_count: 1,
                 dimension: TextureDimension::D2,
-                format: TextureFormat::R8Unorm, // R8Unorm is 8 bit Grayscale
+                format: TextureFormat::Rg8Unorm, // R8Unorm is 8 bit Grayscale
                 usage: TextureUsages::TEXTURE_BINDING,
                 view_formats: &[],
             },
             TextureDataOrder::LayerMajor,
-            &font_sdf.data,
+            &font_container.points_texture.data,
         );
+
         let pipeline_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
             layout: &pipeline_layout,
             entries: &[
@@ -336,7 +342,7 @@ impl Renderer {
                 },
                 wgpu::BindGroupEntry {
                     binding: 3,
-                    resource: font_config_uniform_buffer.as_entire_binding(),
+                    resource: font_curves_array_buffer.as_entire_binding(),
                 },
             ],
             label: Some("pipeline_bind_group"),
@@ -394,8 +400,8 @@ impl Renderer {
         });
 
         Self {
-            font_config_uniform_buffer,
-            font_sdf,
+            font_config_uniform_buffer: font_curves_array_buffer,
+            font_sdf: font_container,
             width,
             height,
             adapter,
@@ -439,20 +445,20 @@ impl Renderer {
                             .next()
                             .expect("number to string conversion to have atleast 1 character"),
                     )
-                    .map(|v| (w.visible, v.0, v.1))
+                    .map(|v| (w.visible, v))
             })
             .fold(
                 (0., Vec::with_capacity(state.workspaces.len())),
-                |(offset, mut instances), (is_visible, width, char_glyph)| {
+                |(offset, mut instances), (is_visible, shape_location)| {
                     instances.push(Instance {
                         position: [offset, 0.],
-                        scale: [width as f32, 1.],
+                        scale: [shape_location.aspect_ratio as f32, 1.],
                         fg: if is_visible { 0xff0000ff } else { 0xffff0000 },
                         bg: 0x00000000,
-                        tex_offset: [char_glyph.min.x, char_glyph.min.y],
-                        tex_scale: [char_glyph.width(), char_glyph.height()],
+                        curve_offset: shape_location.offset,
+                        curve_len: shape_location.len,
                     });
-                    (offset + width as f32, instances)
+                    (offset + shape_location.aspect_ratio, instances)
                 },
             );
         const MPD_PROGRESS_WIDTH: f32 = 1.;
@@ -464,8 +470,8 @@ impl Renderer {
                     scale: [progress * MPD_PROGRESS_WIDTH, 1.],
                     bg: 0xffffffff,
                     fg: 0xffffffff,
-                    tex_scale: [1., 1.],
-                    tex_offset: [0., 0.],
+                    curve_offset: 0,
+                    curve_len: 0,
                 });
                 offset += progress * MPD_PROGRESS_WIDTH;
                 instance_data.push(Instance {
@@ -473,8 +479,8 @@ impl Renderer {
                     scale: [(1. - progress) * MPD_PROGRESS_WIDTH, 1.],
                     bg: 0xff0000ff,
                     fg: 0xff0000ff,
-                    tex_scale: [1., 1.],
-                    tex_offset: [0., 0.],
+                    curve_offset: 0,
+                    curve_len: 0,
                 });
                 offset += (1. - progress) * MPD_PROGRESS_WIDTH;
             }
@@ -485,21 +491,19 @@ impl Renderer {
             .as_ref()
             .map(|song| song.title.clone())
         {
-            for (width, glyph) in song_name
+            for location in song_name
                 .chars()
                 .flat_map(|c| self.font_sdf.locations.get(&c))
             {
-
                 instance_data.push(Instance {
                     position: [offset, 0.],
-                    scale: [*width as f32, 1.],
+                    scale: [location.aspect_ratio, 1.],
                     fg: 0xffffffff,
                     bg: 0xff000000,
-                    tex_offset: [glyph.min.x, glyph.min.y],
-                    tex_scale: [glyph.width(), glyph.height()],
+                    curve_offset: location.offset,
+                    curve_len: location.len,
                 });
-                offset += *width as f32;
-
+                offset += location.aspect_ratio;
             }
         }
 
@@ -570,23 +574,12 @@ impl Renderer {
     ) {
         let renderer = Arc::new(RwLock::new(self));
         let handle = Handle::current();
-        let (sender, mut _receiver) = channel(1);
         let renderer1 = Arc::clone(&renderer);
         let display_handle = handle.spawn(async move {
             while let Some(message) = display_receiver.recv().await {
                 match message {
-                    DisplayMessage::CanDraw => {
-                        sender
-                            .send(())
-                            .await
-                            .expect("To be able to send a message that we can draw");
-                    }
                     DisplayMessage::Configure { width, height } => {
                         renderer1.write().await.resize(width, height);
-                        sender
-                            .send(())
-                            .await
-                            .expect("To be able to send a message that we can draw");
                     }
                 }
             }
@@ -595,7 +588,6 @@ impl Renderer {
         let render_handle = handle.spawn(async move {
             while let Some(state) = render_receiver.recv().await {
                 log::info!("Received signal that drawing is requested");
-                log::info!("Ignoring signal that we can draw");
                 renderer.read().await.draw_frame(&state);
                 log::info!("Drew the frame");
             }

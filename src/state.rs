@@ -5,7 +5,7 @@ use tokio::sync::mpsc::Sender;
 use tokio_stream::StreamExt;
 
 use crate::{
-    font::{Line, Vector},
+    font::{Line, Segment, Vector},
     sway::Workspace,
 };
 
@@ -15,7 +15,7 @@ pub struct State {
     pub mpd_status: Option<Status>,
     pub mpd_current_song: Option<mpd::Song>,
     pub press_position: Vector,
-    pub lines: Vec<Line>,
+    pub segments: Vec<Segment>,
 }
 
 #[derive(Debug)]
@@ -63,7 +63,7 @@ impl State {
             mpd_status: None,
             mpd_current_song: None,
             press_position: Vector { x: 0., y: 0. },
-            lines: vec![],
+            segments: vec![],
         }
     }
 
@@ -143,7 +143,10 @@ impl State {
                 self.mpd_current_song = song;
             }
             Message::PointerPress { pos } => self.press_position = pos,
-            Message::PointerRelease { pos } => self.lines.push(Line(self.press_position, pos)),
+            Message::PointerRelease { pos } => {
+                self.segments
+                    .push(Segment::LINE(Line(self.press_position, pos)));
+            }
         }
     }
 }

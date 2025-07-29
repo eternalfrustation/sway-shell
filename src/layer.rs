@@ -1,16 +1,15 @@
-use std::sync::Arc;
+use std::future::poll_fn;
 
-use tokio::{sync::mpsc::Sender, task::block_in_place};
+use tokio::{
+    runtime::Handle,
+    sync::mpsc::Sender,
+    task::{JoinError, block_in_place},
+};
 
 use wayland_client::{
-    Connection, Dispatch, DispatchError, EventQueue, Proxy, QueueHandle,
-    backend::ObjectData,
-    globals::GlobalListContents,
+    Connection, DispatchError, EventQueue, QueueHandle,
     globals::{GlobalList, registry_queue_init},
-    protocol::{
-        wl_callback::WlCallback, wl_compositor::WlCompositor, wl_output::WlOutput,
-        wl_registry::WlRegistry, wl_seat::WlSeat, wl_surface::WlSurface,
-    },
+    protocol::wl_surface::WlSurface,
     protocol::{
         wl_keyboard::{self, WlKeyboard},
         wl_pointer::{self, WlPointer},
@@ -19,40 +18,21 @@ use wayland_client::{
 };
 
 use smithay_client_toolkit::{
-    compositor::{CompositorHandler, CompositorState, SurfaceData},
+    compositor::{CompositorHandler, CompositorState},
     delegate_compositor, delegate_keyboard, delegate_layer, delegate_output, delegate_pointer,
-    delegate_registry, delegate_seat, delegate_shm,
-    globals::GlobalData,
-    output::{OutputData, OutputHandler, OutputState},
-    reexports::{
-        protocols::{
-            wp::cursor_shape::v1::client::{
-                wp_cursor_shape_device_v1::WpCursorShapeDeviceV1,
-                wp_cursor_shape_manager_v1::WpCursorShapeManagerV1,
-            },
-            xdg::xdg_output::zv1::client::{
-                zxdg_output_manager_v1::ZxdgOutputManagerV1, zxdg_output_v1::ZxdgOutputV1,
-            },
-        },
-        protocols_wlr::layer_shell::v1::client::{
-            zwlr_layer_shell_v1::ZwlrLayerShellV1, zwlr_layer_surface_v1::ZwlrLayerSurfaceV1,
-        },
-    },
-    registry::{ProvidesRegistryState, RegistryHandler, RegistryState},
+    delegate_registry, delegate_seat,
+    output::{OutputHandler, OutputState},
+    registry::{ProvidesRegistryState, RegistryState},
     registry_handlers,
     seat::{
-        Capability, SeatData, SeatHandler, SeatState,
-        keyboard::{KeyEvent, KeyboardData, KeyboardHandler, Keysym, Modifiers},
-        pointer::{
-            PointerData, PointerEvent, PointerEventKind, PointerHandler,
-            cursor_shape::CursorShapeManager,
-        },
+        Capability, SeatHandler, SeatState,
+        keyboard::{KeyEvent, KeyboardHandler, Keysym, Modifiers},
+        pointer::{PointerEvent, PointerEventKind, PointerHandler},
     },
     shell::{
         WaylandSurface,
         wlr_layer::{
             Anchor, KeyboardInteractivity, Layer, LayerShell, LayerShellHandler, LayerSurface,
-            LayerSurfaceData,
         },
     },
 };
@@ -60,7 +40,6 @@ use smithay_client_toolkit::{
 use crate::{font::Vector, state::Message};
 
 pub enum DisplayMessage {
-    CanDraw,
     Configure { width: u32, height: u32 },
 }
 
@@ -85,7 +64,7 @@ pub struct Display {
 }
 
 impl Display {
-    pub fn new(
+    pub async fn new(
         height: u32,
         display_sender: Sender<DisplayMessage>,
         state_sender: Sender<Message>,
@@ -117,7 +96,11 @@ impl Display {
 
         layer.set_anchor(Anchor::TOP.union(Anchor::LEFT).union(Anchor::RIGHT));
         layer.set_size(0, height);
-
+        /*display_sender
+                    .send(DisplayMessage::Configure { width: 100, height })
+                    .await
+                    .expect("To be able to send message for configuring rendering");
+        */
         (
             Display {
                 display_sender,
@@ -142,13 +125,21 @@ impl Display {
     }
 
     /// Actual rendering happens in CompositorHandler::frame
-    pub async fn run_event_loop(
+    pub fn run_event_loop(
         mut self,
         mut event_queue: EventQueue<Self>,
     ) -> Result<(), EventLoopError> {
+        log::info!("Starting poll for events");
         loop {
-            event_queue.blocking_dispatch(&mut self)?;
             self.layer.commit();
+            event_queue.blocking_dispatch(&mut self)?;
+            /*
+                        poll_fn(|cx| {
+                            log::info!("Checking for polling");
+                            event_queue.poll_dispatch_pending(cx, &mut self)
+                        })
+                        .await?;
+            */
 
             if self.exit {
                 log::info!("exiting example");
@@ -162,11 +153,18 @@ impl Display {
 #[derive(Debug)]
 pub enum EventLoopError {
     EventQueueDispathError(DispatchError),
+    TokioError(JoinError),
 }
 
 impl From<DispatchError> for EventLoopError {
     fn from(value: DispatchError) -> Self {
         Self::EventQueueDispathError(value)
+    }
+}
+
+impl From<JoinError> for EventLoopError {
+    fn from(value: JoinError) -> Self {
+        Self::TokioError(value)
     }
 }
 
@@ -186,14 +184,15 @@ impl LayerShellHandler for Display {
         let (new_width, new_height) = configure.new_size;
         self.width = new_width;
         self.height = new_height;
-        block_in_place(|| {
-            self.display_sender
-                .blocking_send(DisplayMessage::Configure {
-                    width: self.width,
-                    height: self.height,
+        let display_sender = self.display_sender.clone();
+        Handle::current().spawn(async move {
+            display_sender
+                .send(DisplayMessage::Configure {
+                    width: new_width,
+                    height: new_height,
                 })
-        })
-        .expect("To be able to send a display message when configuration is requested");
+                .await
+        });
         layer.set_size(self.width, self.height);
     }
 }
@@ -265,18 +264,20 @@ impl OutputHandler for Display {
             .output_state
             .info(&output)
             .expect("To be able to get the info of the output from current output state");
-        if let Some((width, _)) = output_info.logical_size {
+        if let Some((width, height)) = output_info.logical_size {
             self.width = width as u32;
             self.layer.set_size(self.width, self.height);
             self.layer.set_exclusive_zone(self.height as i32);
-            block_in_place(|| {
-                self.display_sender
-                    .blocking_send(DisplayMessage::Configure {
-                        width: self.width,
-                        height: self.height,
+            let display_sender = self.display_sender.clone();
+            Handle::current().spawn(async move {
+                log::info!("New Output message being sent");
+                display_sender
+                    .send(DisplayMessage::Configure {
+                        width: width as u32,
+                        height: height as u32,
                     })
-            })
-            .expect("To be able to send a display message when new output is created");
+                    .await
+            });
         }
     }
 
@@ -338,6 +339,7 @@ impl SeatHandler for Display {
                 .get_pointer(qh, &seat)
                 .expect("Failed to create pointer");
             self.pointer = Some(pointer);
+            dbg!(&self.pointer);
         }
     }
 
@@ -346,9 +348,17 @@ impl SeatHandler for Display {
         _conn: &Connection,
         _qh: &QueueHandle<Self>,
         _seat: wayland_client::protocol::wl_seat::WlSeat,
-        _capability: smithay_client_toolkit::seat::Capability,
+        capability: smithay_client_toolkit::seat::Capability,
     ) {
-        log::info!("Wgpu::remove_capability");
+        if capability == Capability::Keyboard && self.keyboard.is_some() {
+            println!("Unset keyboard capability");
+            self.keyboard.take().unwrap().release();
+        }
+
+        if capability == Capability::Pointer && self.pointer.is_some() {
+            println!("Unset pointer capability");
+            self.pointer.take().unwrap().release();
+        }
     }
 
     fn remove_seat(
@@ -365,7 +375,7 @@ impl PointerHandler for Display {
     fn pointer_frame(
         &mut self,
         _conn: &Connection,
-        qh: &QueueHandle<Self>,
+        _qh: &QueueHandle<Self>,
         _pointer: &wl_pointer::WlPointer,
         events: &[PointerEvent],
     ) {
@@ -388,8 +398,8 @@ impl PointerHandler for Display {
                     block_in_place(|| {
                         self.state_sender.blocking_send(Message::PointerPress {
                             pos: Vector {
-                                x: event.position.0,
-                                y: event.position.1,
+                                x: event.position.0 as f32,
+                                y: event.position.1 as f32,
                             },
                         })
                     })
@@ -400,8 +410,8 @@ impl PointerHandler for Display {
                     block_in_place(|| {
                         self.state_sender.blocking_send(Message::PointerRelease {
                             pos: Vector {
-                                x: event.position.0,
-                                y: event.position.1,
+                                x: event.position.0 as f32,
+                                y: event.position.1 as f32,
                             },
                         })
                     })
