@@ -4,129 +4,245 @@ use std::{
 };
 
 use ab_glyph::{Font, FontRef, Outline, OutlineCurve, Point};
+use bytemuck::Zeroable;
 
 pub const FONT_DATA: &[u8] = include_bytes!("test_font.ttf");
 
 #[derive(Debug)]
 pub struct FontContainer {
-    pub points_texture: CurvePointsTexture,
-    pub curve_offsets: CurveOffsets,
-    pub locations: HashMap<char, ShapeLocation>,
+    /// This texture holds the points for lines
+    pub linear_points_texture: Vec<f32>,
+    /// This texture holds the points for quadratic bezier curves
+    pub quadratic_points_texture: Vec<f32>,
+    /// This texture holds the points for cubic bezier curves
+    pub cubic_points_texture: Vec<f32>,
+
+    /// Offsets for the curve points in the texture defined above
+    /// For the units of offset, refer to ShapeLocation::offset
+    // TODO: refactor so that the texture and offests are in a single struct
+    pub line_curve_offsets: Vec<u32>,
+    pub quadratic_curve_offsets: Vec<u32>,
+    pub cubic_curve_offsets: Vec<u32>,
+
+    /// Locations of characters in the curve_offsets, defined in curve_offsets
+    pub locations: HashMap<char, GlyphInfo>,
 }
 
-#[derive(Debug)]
-pub struct ShapeLocation {
-    pub offset: u32,
+#[repr(C)]
+#[derive(Debug, Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+pub struct GlyphOffLen {
+    /// offset is in terms of primitives, NOT in terms of bytes
+    /// Primitives are: Line, Bez2, Bez3, so a offset of 3 would mean skipping
+    /// 3 * 4 = 12 bytes for lines
+    /// 3 * 6 = 18 bytes for bez2
+    /// 3 * 8 = 24 bytes for bez3
+    pub position: u32,
+    /// len is in terms of primitives, NOT in terms of bytes, refer to offset for an example
     pub len: u32,
+}
+
+#[repr(C)]
+#[derive(Debug, Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+pub struct GlyphInfo {
+    pub line_off: GlyphOffLen,
+    pub bez2_off: GlyphOffLen,
+    pub bez3_off: GlyphOffLen,
+    /// aspect ratio for this shape
+    /// Since all shapes are normalized, you need this to get the proper width
     pub aspect_ratio: f32,
 }
 
 impl FontContainer {
     pub fn new(available_chars: &str) -> Self {
         let font_ref = FontRef::try_from_slice(FONT_DATA).expect("The font to be a valid file");
-        let (points, curve_offsets, locations) = available_chars
+        let (
+            (line_points, quadratic_points, cubic_points),
+            (line_curve_offsets, quadratic_curve_offsets, cubic_curve_offsets),
+            locations,
+        ) = available_chars
             .chars()
             .map(|c| (c, font_ref.glyph_id(c)))
             .flat_map(|(c, id)| font_ref.outline(id).map(|outline| (c, outline)))
             .map(|(c, outline)| (c, Shape::from(outline)))
             .fold(
                 (
-                    Vec::new(),
-                    CurveOffsets { data: Vec::new() },
+                    (Vec::<Line>::new(), Vec::<Bez2>::new(), Vec::<Bez3>::new()),
+                    (Vec::<u32>::new(), Vec::<u32>::new(), Vec::<u32>::new()),
                     HashMap::new(),
                 ),
-                |(mut points, mut offsets, mut locations), (c, shape)| {
-                    let shape_offset = offsets.len();
+                |(mut segments, mut offsets, mut locations), (c, shape)| {
+                    let (lines_offset, bez2_offset, bez3_offset) = (
+                        offsets.0.len() as u32,
+                        offsets.1.len() as u32,
+                        offsets.2.len() as u32,
+                    );
                     for segment in shape.segments.into_iter() {
-                        offsets.append(CurveOffset {
-                            curve_type: segment.curve_type(),
-                            offset: points.len() as u32,
-                        });
-                        points.extend_from_slice(segment.to_bytes().as_slice());
+                        match segment {
+                            Segment::LINE(line) => {
+                                offsets.0.push(segments.0.len() as u32);
+                                segments.0.push(line)
+                            }
+                            Segment::BEZ2(bez2) => {
+                                offsets.1.push(segments.1.len() as u32);
+                                segments.1.push(bez2)
+                            }
+                            Segment::BEZ3(bez3) => {
+                                offsets.2.push(segments.2.len() as u32);
+                                segments.2.push(bez3)
+                            }
+                        }
                     }
-                    let shape_len = offsets.len() - shape_offset;
                     locations.insert(
                         c,
-                        ShapeLocation {
-                            offset: shape_offset,
-                            len: shape_len,
+                        GlyphInfo {
+                            line_off: GlyphOffLen {
+                                position: lines_offset,
+                                len: segments.0.len() as u32 - lines_offset,
+                            },
+                            bez2_off: GlyphOffLen {
+                                position: bez2_offset,
+                                len: segments.1.len() as u32 - bez2_offset,
+                            },
+                            bez3_off: GlyphOffLen {
+                                position: bez3_offset,
+                                len: segments.2.len() as u32 - bez3_offset,
+                            },
                             aspect_ratio: shape.aspect_ratio,
                         },
                     );
-                    (points, offsets, locations)
+                    (segments, offsets, locations)
                 },
             );
+        test_svg_from_locations(
+            &locations,
+            line_points
+                .clone()
+                .into_iter()
+                .flat_map(|v| v.to_f32_arr())
+                .collect(),
+            quadratic_points
+                .clone()
+                .into_iter()
+                .flat_map(|v| v.to_f32_arr())
+                .collect(),
+            cubic_points
+                .clone()
+                .into_iter()
+                .flat_map(|v| v.to_f32_arr())
+                .collect(),
+            '1',
+        );
+        dbg!(locations[&'1']);
         Self {
-            points_texture: CurvePointsTexture::from(points),
-            curve_offsets,
+            linear_points_texture: if line_points.len() == 0 {
+                vec![0., 0., 0., 0.]
+            } else {
+                line_points
+                    .clone()
+                    .into_iter()
+                    .flat_map(|v| v.to_f32_arr())
+                    .collect()
+            },
+            quadratic_points_texture: if quadratic_points.len() == 0 {
+                vec![0., 0., 0., 0., 0., 0.]
+            } else {
+                quadratic_points
+                    .clone()
+                    .into_iter()
+                    .flat_map(|v| v.to_f32_arr())
+                    .collect()
+            },
+            cubic_points_texture: if cubic_points.len() == 0 {
+                vec![0., 0., 0., 0., 0., 0., 0., 0.]
+            } else {
+                cubic_points
+                    .clone()
+                    .into_iter()
+                    .flat_map(|v| v.to_f32_arr())
+                    .collect()
+            },
+            line_curve_offsets: if line_curve_offsets.len() == 0 {
+                vec![0]
+            } else {
+                line_curve_offsets
+            },
+            quadratic_curve_offsets: if quadratic_curve_offsets.len() == 0 {
+                vec![0]
+            } else {
+                quadratic_curve_offsets
+            },
+            cubic_curve_offsets: if cubic_curve_offsets.len() == 0 {
+                vec![0]
+            } else {
+                cubic_curve_offsets
+            },
             locations,
         }
     }
 }
 
-#[repr(u8)]
-#[derive(Debug)]
-pub enum CurveType {
-    Line = 0u8,
-    Bez2 = 1u8,
-    Bez3 = 2u8,
-}
-
-#[derive(Debug)]
-pub struct CurveOffsets {
-    pub data: Vec<u8>,
-}
-
-impl CurveOffsets {
-    fn append(&mut self, offset: CurveOffset) {
-        self.data.push(offset.curve_type as u8);
-        self.data
-            .extend_from_slice(bytemuck::bytes_of(&offset.offset));
+// TODO: Test using texture container, with x and y coords, the way it is done in shader
+fn test_svg_from_locations(
+    locations: &HashMap<char, GlyphInfo>,
+    line_buf: Vec<f32>,
+    quad_buf: Vec<f32>,
+    cubic_buf: Vec<f32>,
+    c: char,
+) {
+    let position = locations[&c];
+    let mut document = svg::Document::new().set("viewbox", (0., 0., 1., 1.));
+    let lines_offset = position.line_off;
+    let quad_offset = position.bez2_off;
+    for i in lines_offset.position..(lines_offset.position + lines_offset.len) {
+        let idx = i * 4;
+        let x0 = line_buf[idx as usize];
+        let y0 = line_buf[idx as usize + 1];
+        let p0 = Vector { x: x0, y: y0 };
+        let x1 = line_buf[idx as usize + 2];
+        let y1 = line_buf[idx as usize + 3];
+        let p1 = Vector { x: x1, y: y1 };
+        document = document.add(
+            svg::node::element::Path::new()
+                .set("stroke", "black")
+                .set("stroke-width", 0.001)
+                .set(
+                    "d",
+                    svg::node::element::path::Data::new()
+                        .move_to((p0.x, p0.y))
+                        .line_to((p1.x, p1.y)),
+                ),
+        )
     }
-
-    fn len(&self) -> u32 {
-        self.data.len() as u32
+    for i in quad_offset.position..(quad_offset.position + quad_offset.len) {
+        let idx = i * 6;
+        let x0 = quad_buf[idx as usize];
+        let y0 = quad_buf[idx as usize + 1];
+        let p0 = Vector { x: x0, y: y0 };
+        let x1 = quad_buf[idx as usize + 2];
+        let y1 = quad_buf[idx as usize + 3];
+        let p1 = Vector { x: x1, y: y1 };
+        let x2 = quad_buf[idx as usize + 4];
+        let y2 = quad_buf[idx as usize + 5];
+        let p2 = Vector { x: x2, y: y2 };
+        dbg!(p0, p1);
+        document = document.add(
+            svg::node::element::Path::new()
+                .set("fill", "none")
+                .set("stroke", "black")
+                .set("stroke-width", 0.001)
+                .set(
+                    "d",
+                    svg::node::element::path::Data::new()
+                        .move_to((p0.x, p0.y))
+                        .smooth_quadratic_curve_to((p1.x, p1.y, p2.x, p2.y)),
+                ),
+        )
     }
+    svg::save(format!("{c}.svg"), &document).unwrap()
 }
 
-#[derive(Debug)]
-pub struct CurveOffset {
-    pub curve_type: CurveType,
-    pub offset: u32,
-}
-
-#[derive(Debug)]
-pub struct CurvePointsTexture {
-    pub data: Vec<u8>,
-    pub width: u32,
-    pub height: u32,
-}
-
-impl From<Vec<u8>> for CurvePointsTexture {
-    /// The format is supposed to have 2 channels
-    fn from(mut data: Vec<u8>) -> Self {
-        let len = data.len() as u32 / 2;
-        let width = len.isqrt();
-        let mut height = width;
-        // Dealing with the round down of isqrt
-        while width * height < len {
-            height += 1;
-        }
-
-        // Padding the data out so that GPU doesn't scream and die
-        if (data.len() as u32) < width * height * 2 {
-            data.extend((0..(width * height * 2 - data.len() as u32)).map(|_| 0u8));
-        }
-
-        CurvePointsTexture {
-            data,
-            width,
-            height,
-        }
-    }
-}
-
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[repr(C)]
+#[derive(Clone, Copy, Debug, PartialEq, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct Vector {
     pub x: f32,
     pub y: f32,
@@ -247,23 +363,6 @@ pub enum Segment {
     BEZ2(Bez2),
     BEZ3(Bez3),
 }
-impl Segment {
-    fn curve_type(&self) -> CurveType {
-        match self {
-            Segment::LINE(_) => CurveType::Line,
-            Segment::BEZ2(_) => CurveType::Bez2,
-            Segment::BEZ3(_) => CurveType::Bez3,
-        }
-    }
-
-    fn to_bytes(self) -> Vec<u8> {
-        match self {
-            Segment::LINE(line) => line.to_u8_bytes().to_vec(),
-            Segment::BEZ2(bez2) => bez2.to_u8_bytes().to_vec(),
-            Segment::BEZ3(bez3) => bez3.to_u8_bytes().to_vec(),
-        }
-    }
-}
 
 impl Div<f32> for Segment {
     type Output = Self;
@@ -346,16 +445,13 @@ impl From<OutlineCurve> for Segment {
     }
 }
 
-#[derive(Clone, Copy, Debug)]
+#[repr(C)]
+#[derive(Clone, Copy, Debug, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct Line(pub Vector, pub Vector);
+
 impl Line {
-    fn to_u8_bytes(self) -> [u8; 4] {
-        [
-            (self.0.x * 255.) as u8,
-            (self.0.y * 255.) as u8,
-            (self.1.x * 255.) as u8,
-            (self.1.y * 255.) as u8,
-        ]
+    fn to_f32_arr(self) -> [f32; 4] {
+        [self.0.x, self.0.y, self.1.x, self.1.y]
     }
 }
 
@@ -383,18 +479,12 @@ impl Add<f32> for Line {
     }
 }
 
-#[derive(Clone, Copy, Debug)]
-struct Bez2(Vector, Vector, Vector);
+#[repr(C)]
+#[derive(Clone, Copy, Debug, bytemuck::Pod, bytemuck::Zeroable)]
+pub struct Bez2(Vector, Vector, Vector);
 impl Bez2 {
-    fn to_u8_bytes(&self) -> [u8; 6] {
-        [
-            (self.0.x * 255.) as u8,
-            (self.0.y * 255.) as u8,
-            (self.1.x * 255.) as u8,
-            (self.1.y * 255.) as u8,
-            (self.2.x * 255.) as u8,
-            (self.2.y * 255.) as u8,
-        ]
+    fn to_f32_arr(&self) -> [f32; 6] {
+        [self.0.x, self.0.y, self.1.x, self.1.y, self.2.x, self.2.y]
     }
 }
 
@@ -422,19 +512,13 @@ impl Add<f32> for Bez2 {
     }
 }
 
-#[derive(Clone, Copy, Debug)]
-struct Bez3(Vector, Vector, Vector, Vector);
+#[repr(C)]
+#[derive(Clone, Copy, Debug, bytemuck::Pod, bytemuck::Zeroable)]
+pub struct Bez3(Vector, Vector, Vector, Vector);
 impl Bez3 {
-    fn to_u8_bytes(&self) -> [u8; 8] {
+    fn to_f32_arr(&self) -> [f32; 8] {
         [
-            (self.0.x * 255.) as u8,
-            (self.0.y * 255.) as u8,
-            (self.1.x * 255.) as u8,
-            (self.1.y * 255.) as u8,
-            (self.2.x * 255.) as u8,
-            (self.2.y * 255.) as u8,
-            (self.3.x * 255.) as u8,
-            (self.3.y * 255.) as u8,
+            self.0.x, self.0.y, self.1.x, self.1.y, self.2.x, self.2.y, self.3.x, self.3.y,
         ]
     }
 }
@@ -476,10 +560,7 @@ impl From<Outline> for Shape {
             x: value.bounds.width(),
             y: value.bounds.height(),
         };
-        let offset_vector = Vector {
-            x: -value.bounds.min.x.min(value.bounds.max.x),
-            y: -value.bounds.min.y.min(value.bounds.max.y),
-        };
+        let offset_vector = Vector::from(value.bounds.min) * -1.;
         Self {
             aspect_ratio: value.bounds.width() / value.bounds.height(),
             segments: value

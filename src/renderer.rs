@@ -2,15 +2,13 @@ use std::io::Write;
 use std::mem;
 use std::{borrow::Cow, ptr::NonNull, sync::Arc};
 
+use bytemuck::Zeroable;
 use raw_window_handle::{
     RawDisplayHandle, RawWindowHandle, WaylandDisplayHandle, WaylandWindowHandle,
 };
 use tokio::{
     runtime::Handle,
-    sync::{
-        RwLock,
-        mpsc::Receiver,
-    },
+    sync::{RwLock, mpsc::Receiver},
 };
 use wayland_client::{Proxy, protocol::wl_surface::WlSurface};
 use wgpu::wgt::TextureDataOrder;
@@ -20,7 +18,7 @@ use wgpu::{
 };
 use wgpu::{Buffer, BufferDescriptor, IndexFormat, PresentMode, RenderPipeline, util::DeviceExt};
 
-use crate::font::FontContainer;
+use crate::font::{FontContainer, GlyphOffLen};
 use crate::{layer::DisplayMessage, state::State};
 
 #[repr(C)]
@@ -75,8 +73,9 @@ pub struct Instance {
     pub scale: [f32; 2],
     pub bg: u32,
     pub fg: u32,
-    pub curve_offset: u32,
-    pub curve_len: u32,
+    pub lines_off: GlyphOffLen,
+    pub quadratic_off: GlyphOffLen,
+    pub cubic_off: GlyphOffLen,
 }
 
 impl Instance {
@@ -92,38 +91,39 @@ impl Instance {
                 // for each vec4. We'll have to reassemble the mat4 in the shader.
                 wgpu::VertexAttribute {
                     offset: 0,
-                    // While our vertex shader only uses locations 0, and 1 now, in later tutorials, we'll
-                    // be using 2, 3, and 4, for Vertex. We'll start at slot 5, not conflict with them later
+                    // While our vertex shader uses locations 0 and 1
+                    shader_location: 2,
+                    format: wgpu::VertexFormat::Float32x2,
+                },
+                wgpu::VertexAttribute {
+                    offset: 8,
+                    shader_location: 3,
+                    format: wgpu::VertexFormat::Float32x2,
+                },
+                wgpu::VertexAttribute {
+                    offset: 16,
+                    shader_location: 4,
+                    format: wgpu::VertexFormat::Unorm8x4,
+                },
+                wgpu::VertexAttribute {
+                    offset: 20,
                     shader_location: 5,
-                    format: wgpu::VertexFormat::Float32x2,
+                    format: wgpu::VertexFormat::Unorm8x4,
                 },
                 wgpu::VertexAttribute {
-                    offset: mem::size_of::<[f32; 2]>() as wgpu::BufferAddress,
+                    offset: 24,
                     shader_location: 6,
-                    format: wgpu::VertexFormat::Float32x2,
+                    format: wgpu::VertexFormat::Uint32x2,
                 },
                 wgpu::VertexAttribute {
-                    offset: mem::size_of::<[f32; 2]>() as wgpu::BufferAddress * 2,
+                    offset: 32,
                     shader_location: 7,
-                    format: wgpu::VertexFormat::Unorm8x4,
+                    format: wgpu::VertexFormat::Uint32x2,
                 },
                 wgpu::VertexAttribute {
-                    offset: mem::size_of::<[f32; 2]>() as wgpu::BufferAddress * 2
-                        + mem::size_of::<u32>() as wgpu::BufferAddress,
+                    offset: 40,
                     shader_location: 8,
-                    format: wgpu::VertexFormat::Unorm8x4,
-                },
-                wgpu::VertexAttribute {
-                    offset: mem::size_of::<[f32; 2]>() as wgpu::BufferAddress * 2
-                        + mem::size_of::<u32>() as wgpu::BufferAddress * 2,
-                    shader_location: 9,
-                    format: wgpu::VertexFormat::Uint32,
-                },
-                wgpu::VertexAttribute {
-                    offset: mem::size_of::<[f32; 2]>() as wgpu::BufferAddress * 2
-                        + mem::size_of::<u32>() as wgpu::BufferAddress * 3,
-                    shader_location: 9,
-                    format: wgpu::VertexFormat::Uint32,
+                    format: wgpu::VertexFormat::Uint32x2,
                 },
             ],
         }
@@ -144,9 +144,7 @@ pub struct Renderer {
     pub square_num_vertices: u32,
     pub global_transform_uniform_buffer: Buffer,
     pub pipeline_bind_group: wgpu::BindGroup,
-    pub font_config_uniform_buffer: Buffer,
     pub instance_buffer: Buffer,
-    pub font_texture: wgpu::Texture,
     pub font_sdf: FontContainer,
 }
 
@@ -220,7 +218,7 @@ impl Renderer {
         // Loading the font
         // Need to write custom code for this part
         let font_container = FontContainer::new(
-            "QWERTYUIOPASDFGHJKLZXCVBNMqwertyuiopasdfghjklzxcvbnm1234567890[];',./<>?:\"{}+_)(*&^%$#@!~`=",
+            "|QWERTYUIOPASDFGHJKLZXCVBNMqwertyuiopasdfghjklzxcvbnm1234567890[];',./<>?:\"{}+_)(*&^%$#@!~`=",
         );
         // Load the shaders from disk
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
@@ -235,14 +233,25 @@ impl Renderer {
                 contents: bytemuck::cast_slice(&[global_transform_uniform]),
                 usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             });
-        // Start, end, smoothing
-        // TODO: Convert to a struct
-        let font_curves_array_buffer =
+        let font_lines_curves_offset_array_buffer =
             device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                label: Some("Font Config Buffer"),
-                contents: bytemuck::cast_slice(font_container.curve_offsets.data.as_slice()),
+                label: Some("Font Lines Curves Offset Buffer"),
+                contents: bytemuck::cast_slice(font_container.line_curve_offsets.as_slice()),
                 usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
             });
+        let font_quadratics_curves_offset_array_buffer =
+            device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("Font Quadratic Curves Offset Buffer"),
+                contents: bytemuck::cast_slice(font_container.quadratic_curve_offsets.as_slice()),
+                usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+            });
+        let font_cubics_curves_offset_array_buffer =
+            device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("Font Cubic Curves Offset Buffer"),
+                contents: bytemuck::cast_slice(font_container.cubic_curve_offsets.as_slice()),
+                usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+            });
+
         let pipeline_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             entries: &[
                 wgpu::BindGroupLayoutEntry {
@@ -258,21 +267,31 @@ impl Renderer {
                 wgpu::BindGroupLayoutEntry {
                     binding: 1,
                     visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Texture {
-                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
-                        view_dimension: TextureViewDimension::D2,
-                        multisampled: false,
-                    },
+                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::NonFiltering),
                     count: None,
                 },
                 wgpu::BindGroupLayoutEntry {
                     binding: 2,
                     visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Storage { read_only: true },
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
                     count: None,
                 },
                 wgpu::BindGroupLayoutEntry {
                     binding: 3,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Storage { read_only: true },
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 4,
                     visibility: wgpu::ShaderStages::FRAGMENT,
                     ty: wgpu::BindingType::Buffer {
                         ty: wgpu::BufferBindingType::Storage { read_only: true },
@@ -300,25 +319,26 @@ impl Renderer {
             border_color: None,
         });
 
-        let font_texture = device.create_texture_with_data(
-            &queue,
-            &TextureDescriptor {
-                label: Some("Font Atlas texture"),
-                size: Extent3d {
-                    width: font_container.points_texture.width,
-                    height: font_container.points_texture.height,
-                    depth_or_array_layers: 1,
-                },
-                mip_level_count: 1,
-                sample_count: 1,
-                dimension: TextureDimension::D2,
-                format: TextureFormat::Rg8Unorm, // R8Unorm is 8 bit Grayscale
-                usage: TextureUsages::TEXTURE_BINDING,
-                view_formats: &[],
-            },
-            TextureDataOrder::LayerMajor,
-            &font_container.points_texture.data,
-        );
+        let font_lines_points_buffer =
+            device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("Font Lines texture"),
+                contents: bytemuck::cast_slice(&font_container.linear_points_texture),
+                usage: wgpu::BufferUsages::STORAGE,
+            });
+
+        let font_quadratic_points_buffer =
+            device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("Font Quad texture"),
+                contents: bytemuck::cast_slice(&font_container.quadratic_points_texture),
+                usage: wgpu::BufferUsages::STORAGE,
+            });
+
+        let font_cubic_points_buffer =
+            device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("Font Cubic texture"),
+                contents: bytemuck::cast_slice(&font_container.cubic_points_texture),
+                usage: wgpu::BufferUsages::STORAGE,
+            });
 
         let pipeline_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
             layout: &pipeline_layout,
@@ -329,17 +349,19 @@ impl Renderer {
                 },
                 wgpu::BindGroupEntry {
                     binding: 1,
-                    resource: wgpu::BindingResource::TextureView(
-                        &font_texture.create_view(&TextureViewDescriptor::default()),
-                    ),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 2,
                     resource: wgpu::BindingResource::Sampler(&sampler),
                 },
                 wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: font_lines_points_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
                     binding: 3,
-                    resource: font_curves_array_buffer.as_entire_binding(),
+                    resource: font_quadratic_points_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 4,
+                    resource: font_cubic_points_buffer.as_entire_binding(),
                 },
             ],
             label: Some("pipeline_bind_group"),
@@ -397,7 +419,6 @@ impl Renderer {
         });
 
         Self {
-            font_config_uniform_buffer: font_curves_array_buffer,
             font_sdf: font_container,
             width,
             height,
@@ -409,7 +430,6 @@ impl Renderer {
             square_vb,
             square_ib,
             instance_buffer,
-            font_texture,
             square_num_vertices: SQUARE_INDICES.len() as u32,
             global_transform_uniform_buffer,
             pipeline_bind_group,
@@ -449,13 +469,14 @@ impl Renderer {
                 |(offset, mut instances), (is_visible, shape_location)| {
                     instances.push(Instance {
                         position: [offset, 0.],
-                        scale: [shape_location.aspect_ratio as f32, 1.],
+                        scale: [shape_location.aspect_ratio.abs() as f32, 1.],
                         fg: if is_visible { 0xff0000ff } else { 0xffff0000 },
                         bg: 0x00000000,
-                        curve_offset: shape_location.offset,
-                        curve_len: shape_location.len,
+                        lines_off: shape_location.line_off,
+                        quadratic_off: shape_location.bez2_off,
+                        cubic_off: shape_location.bez3_off,
                     });
-                    (offset + shape_location.aspect_ratio, instances)
+                    (offset + shape_location.aspect_ratio.abs(), instances)
                 },
             );
         const MPD_PROGRESS_WIDTH: f32 = 1.;
@@ -467,8 +488,9 @@ impl Renderer {
                     scale: [progress * MPD_PROGRESS_WIDTH, 1.],
                     bg: 0xffffffff,
                     fg: 0xffffffff,
-                    curve_offset: 0,
-                    curve_len: 0,
+                    lines_off: GlyphOffLen::zeroed(),
+                    quadratic_off: GlyphOffLen::zeroed(),
+                    cubic_off: GlyphOffLen::zeroed(),
                 });
                 offset += progress * MPD_PROGRESS_WIDTH;
                 instance_data.push(Instance {
@@ -476,8 +498,9 @@ impl Renderer {
                     scale: [(1. - progress) * MPD_PROGRESS_WIDTH, 1.],
                     bg: 0xff0000ff,
                     fg: 0xff0000ff,
-                    curve_offset: 0,
-                    curve_len: 0,
+                    lines_off: GlyphOffLen::zeroed(),
+                    quadratic_off: GlyphOffLen::zeroed(),
+                    cubic_off: GlyphOffLen::zeroed(),
                 });
                 offset += (1. - progress) * MPD_PROGRESS_WIDTH;
             }
@@ -488,19 +511,20 @@ impl Renderer {
             .as_ref()
             .map(|song| song.title.clone())
         {
-            for location in song_name
+            for shape_location in song_name
                 .chars()
                 .flat_map(|c| self.font_sdf.locations.get(&c))
             {
                 instance_data.push(Instance {
                     position: [offset, 0.],
-                    scale: [location.aspect_ratio, 1.],
+                    scale: [shape_location.aspect_ratio.abs(), 1.],
                     fg: 0xffffffff,
                     bg: 0xff000000,
-                    curve_offset: location.offset,
-                    curve_len: location.len,
+                    lines_off: shape_location.line_off,
+                    quadratic_off: shape_location.bez2_off,
+                    cubic_off: shape_location.bez3_off,
                 });
-                offset += location.aspect_ratio;
+                offset += shape_location.aspect_ratio.abs();
             }
         }
 
@@ -559,7 +583,8 @@ impl Renderer {
             .get_default_config(&self.adapter, self.width, self.height)
             .expect("To be able to get the default config from a surface");
         config.desired_maximum_frame_latency = 1;
-        config.present_mode = PresentMode::Mailbox;
+        // Change this back to Mailbox
+        config.present_mode = PresentMode::Fifo;
         self.surface.configure(&self.device, &config);
         self.queue.submit([]);
     }
