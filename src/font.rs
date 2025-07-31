@@ -561,6 +561,11 @@ impl From<Outline> for Shape {
             y: value.bounds.height(),
         };
         let offset_vector = Vector::from(value.bounds.min) * -1.;
+        let padding_scale = Vector {
+            x: 1. / 0.8,
+            y: 1. / 0.8,
+        };
+        let padding_offset = Vector { x: 0.1, y: 0.1 };
         Self {
             aspect_ratio: value.bounds.width() / value.bounds.height(),
             segments: value
@@ -568,6 +573,7 @@ impl From<Outline> for Shape {
                 .into_iter()
                 .map(|outline_curve| Segment::from(outline_curve))
                 .map(|segment| (segment + offset_vector) / scaling_vector)
+                .map(|segment| (segment / padding_scale) + padding_offset)
                 .collect(),
         }
     }

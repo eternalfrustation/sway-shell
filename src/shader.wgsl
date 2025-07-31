@@ -75,17 +75,62 @@ fn sdLine(p: vec2<f32>, a: vec2<f32>, b: vec2<f32>) -> f32 {
     return max(q.x, q.y);
 }
 
-fn sdQuadratic(p: vec2<f32>, a: vec2<f32>, b: vec2<f32>, c: vec2<f32>) -> f32 {
-    let pa = p - a;
-    let ba = c - a;
-    var s = 1.;
-
-    if ba.x * ba.y < 0.0 {s = -1.0;};
-    let h = clamp((pa.y + s * pa.x) / (ba.y + s * ba.x), 0.0, 1.0);
-    let q = abs(pa - h * ba);
-    return max(q.x, q.y);
+fn intersectingLine(p: vec2<f32>, a: vec2<f32>, b: vec2<f32>) -> i32 {
+	if (p.x < max(a, b).x) {
+		return 0;
+	}
+	let a1 = p;
+	let b1 = vec2<f32>(1., 0.);
+	let a2 = a;
+	let b2 = b - a;
+	let t = (a1.y - a2.y) / b2.y;
+	if (t < 0. || t > 1.) {
+		return 0;
+	} 
+	return i32(sign(b2.y / b2.x));
 }
 
+fn dot2(v: vec2<f32>) -> f32 {
+	return dot(v, v);
+}
+
+
+fn sdQuadratic(pos: vec2<f32>, A: vec2<f32>, B: vec2<f32>, C: vec2<f32>) -> f32 {
+    let a = B - A;
+    let b = A - 2.0*B + C;
+    let c = a * 2.0;
+    let d = A - pos;
+    let kk = 1.0/dot(b,b);
+    let kx = kk * dot(a,b);
+    let ky = kk * (2.0*dot(a,a)+dot(d,b)) / 3.0;
+    let kz = kk * dot(d,a);      
+    var res = 0.0;
+    let p = ky - kx*kx;
+    let p3 = p*p*p;
+    let q = kx*(2.0*kx*kx - 3.0*ky) + kz;
+    var h = q*q + 4.0*p3;
+    if( h >= 0.0) 
+    { 
+        h = sqrt(h);
+        let x = (vec2(h,-h)-q)/2.0;
+        let uv = sign(x)*pow(abs(x), vec2(1.0/3.0));
+        let t = clamp( uv.x+uv.y-kx, 0.0, 1.0 );
+        res = dot2(d + (c + b*t)*t);
+    }
+    else
+    {
+        let z = sqrt(-p);
+        let v = acos( q/(p*z*2.0) ) / 3.0;
+        let m = cos(v);
+        let n = sin(v)*1.732050808;
+        let  t = clamp(vec3<f32>(m+m,-n-m,n-m)*z-kx,vec3<f32>(0.0),vec3<f32>(1.0));
+        res = min( dot2(d+(c+b*t.x)*t.x),
+                   dot2(d+(c+b*t.y)*t.y) );
+        // the third root cannot be the closest
+        // res = min(res,dot2(d+(c+b*t.z)*t.z));
+    }
+    return sqrt( res );
+}
 @fragment
 fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
     //var winding = 0;
@@ -109,6 +154,8 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
 
 
         min_dist = min(min_dist, sdLine(input.tex_coords.xy, p0, p1));
+		//winding += intersectingLine(input.tex_coords.xy, p0, p1);
+
 /*
         let m = (p1.y - p0.y) / (p1.x - p1.x);
 
@@ -153,14 +200,10 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
 
         min_dist = min(min_dist, sdQuadratic(input.tex_coords.xy, p0, p1, p2));
 	}
-
-    if min_dist < 0.01 {
-        return input.fg;
-    }
-	/*
-    if winding == 0 {
+/*
+    if winding != 0 {
         return input.fg;
     }
 */
-    return input.bg;
+    return smoothstep(input.fg, input.bg, vec4<f32>(min_dist) * 100.);
 }
