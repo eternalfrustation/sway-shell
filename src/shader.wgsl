@@ -62,6 +62,9 @@ fn vs_main(input: VertexInput, instance: InstanceInput) -> VertexOutput {
     return out;
 }
 
+fn cross_f(a: vec2<f32>, b: vec2<f32>) -> f32 {
+	return a.x * b.y - a.y * b.x;
+}
 
 
 fn sdLine(p: vec2<f32>, a: vec2<f32>, b: vec2<f32>) -> f32 {
@@ -72,7 +75,7 @@ fn sdLine(p: vec2<f32>, a: vec2<f32>, b: vec2<f32>) -> f32 {
     if ba.x * ba.y < 0.0 {s = -1.0;};
     let h = clamp((pa.y + s * pa.x) / (ba.y + s * ba.x), 0.0, 1.0);
     let q = abs(pa - h * ba);
-    return max(q.x, q.y);
+    return max(q.x, q.y) ;
 }
 
 fn intersectingLine(p: vec2<f32>, a: vec2<f32>, b: vec2<f32>) -> i32 {
@@ -205,5 +208,6 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
         return input.fg;
     }
 */
-    return smoothstep(input.fg, input.bg, vec4<f32>(min_dist) * 100.);
+    return mix(input.fg, input.bg, min_dist * 100.);
+
 }
