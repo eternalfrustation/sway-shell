@@ -1,4 +1,3 @@
-use std::io::Write;
 use std::mem;
 use std::{borrow::Cow, ptr::NonNull, sync::Arc};
 
@@ -11,10 +10,8 @@ use tokio::{
     sync::{RwLock, mpsc::Receiver},
 };
 use wayland_client::{Proxy, protocol::wl_surface::WlSurface};
-use wgpu::wgt::TextureDataOrder;
 use wgpu::{
-    AddressMode, DeviceDescriptor, Extent3d, FilterMode, SamplerDescriptor, TextureDescriptor,
-    TextureDimension, TextureFormat, TextureUsages, TextureViewDescriptor, TextureViewDimension,
+    AddressMode, DeviceDescriptor, FilterMode, SamplerDescriptor,
 };
 use wgpu::{Buffer, BufferDescriptor, IndexFormat, PresentMode, RenderPipeline, util::DeviceExt};
 
@@ -233,25 +230,6 @@ impl Renderer {
                 contents: bytemuck::cast_slice(&[global_transform_uniform]),
                 usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             });
-        let font_lines_curves_offset_array_buffer =
-            device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                label: Some("Font Lines Curves Offset Buffer"),
-                contents: bytemuck::cast_slice(font_container.line_curve_offsets.as_slice()),
-                usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
-            });
-        let font_quadratics_curves_offset_array_buffer =
-            device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                label: Some("Font Quadratic Curves Offset Buffer"),
-                contents: bytemuck::cast_slice(font_container.quadratic_curve_offsets.as_slice()),
-                usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
-            });
-        let font_cubics_curves_offset_array_buffer =
-            device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                label: Some("Font Cubic Curves Offset Buffer"),
-                contents: bytemuck::cast_slice(font_container.cubic_curve_offsets.as_slice()),
-                usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
-            });
-
         let pipeline_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             entries: &[
                 wgpu::BindGroupLayoutEntry {

@@ -1,4 +1,4 @@
-use std::{env::VarError, os::unix::net::UnixStream, path::PathBuf, sync::Arc};
+use std::{env::VarError, fmt::Display, os::unix::net::UnixStream, path::PathBuf, sync::Arc};
 
 use mpd::{Idle, Subsystem};
 use tokio::{
@@ -15,6 +15,17 @@ enum MpdError {
     StdIOError(std::io::Error),
     MpdInternalError(mpd::error::Error),
     SendError(SendError<Message>),
+}
+
+impl Display for MpdError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            MpdError::VarError(var_error) => f.write_fmt(format_args!("Environment Variable Error: {}", var_error)),
+            MpdError::StdIOError(error) => f.write_fmt(format_args!("StdIO Error: {}", error)),
+            MpdError::MpdInternalError(error) => f.write_fmt(format_args!("MPD Error: {}", error)),
+            MpdError::SendError(send_error) => f.write_fmt(format_args!("Channel Error: {}", send_error)),
+        }
+    }
 }
 
 impl From<VarError> for MpdError {

@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use std::{fmt::Display, sync::Arc};
 
 use swayipc::{Event, EventType, Node, Rect, WorkspaceChange};
 use tokio::{
@@ -80,6 +80,15 @@ impl From<swayipc::Workspace> for Workspace {
 enum SwayError {
     ConnectionError(swayipc::Error),
     ChannelError(SendError<Message>),
+}
+
+impl Display for SwayError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self{
+            SwayError::ConnectionError(error) => f.write_fmt(format_args!("Connection Error: {}", error)),
+            SwayError::ChannelError(send_error) => f.write_fmt(format_args!("Channel Error: {}", send_error)),
+        }
+    }
 }
 
 impl From<swayipc::Error> for SwayError {

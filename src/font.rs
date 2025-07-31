@@ -4,7 +4,6 @@ use std::{
 };
 
 use ab_glyph::{Font, FontRef, Outline, OutlineCurve, Point};
-use bytemuck::Zeroable;
 
 pub const FONT_DATA: &[u8] = include_bytes!("test_font.ttf");
 
@@ -113,7 +112,7 @@ impl FontContainer {
                     (segments, offsets, locations)
                 },
             );
-        test_svg_from_locations(
+        /*test_svg_from_locations(
             &locations,
             line_points
                 .clone()
@@ -132,6 +131,7 @@ impl FontContainer {
                 .collect(),
             '1',
         );
+*/
         dbg!(locations[&'1']);
         Self {
             linear_points_texture: if line_points.len() == 0 {
@@ -181,12 +181,11 @@ impl FontContainer {
     }
 }
 
-// TODO: Test using texture container, with x and y coords, the way it is done in shader
+/*
 fn test_svg_from_locations(
     locations: &HashMap<char, GlyphInfo>,
     line_buf: Vec<f32>,
     quad_buf: Vec<f32>,
-    cubic_buf: Vec<f32>,
     c: char,
 ) {
     let position = locations[&c];
@@ -240,6 +239,7 @@ fn test_svg_from_locations(
     }
     svg::save(format!("{c}.svg"), &document).unwrap()
 }
+*/
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, PartialEq, bytemuck::Pod, bytemuck::Zeroable)]
@@ -281,7 +281,6 @@ impl Add<f32> for Vector {
     }
 }
 
-const EPSILON: f32 = 3e-15;
 
 impl<F: Into<f32>> Mul<F> for Vector {
     type Output = Self;
@@ -315,35 +314,6 @@ impl Sub for Vector {
             x: self.x - rhs.x,
             y: self.y - rhs.y,
         }
-    }
-}
-
-impl Vector {
-    fn dot(self, rhs: Self) -> f32 {
-        self.x * rhs.x + self.y * rhs.y
-    }
-
-    fn sq_dist(self, rhs: Self) -> f32 {
-        (rhs.x - self.x).powi(2) + (rhs.y - self.y).powi(2)
-    }
-
-    fn mag(self) -> f32 {
-        (self.x * self.x + self.y * self.y).sqrt()
-    }
-
-    fn norm(self) -> Self {
-        let mag = self.mag();
-        if mag.abs() < EPSILON {
-            return Self { x: 0., y: 0. };
-        }
-        Self {
-            x: self.x / mag,
-            y: self.y / mag,
-        }
-    }
-
-    fn cross(&self, s0: Vector) -> f32 {
-        self.x * s0.y - self.y * s0.x
     }
 }
 
