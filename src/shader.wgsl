@@ -247,6 +247,6 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
     }
 */
 
-	return vec4<f32>((min_dist.x)* 100.   );
-    //return mix(input.fg, input.bg, ( min_dist * 100. ) );
+	
+    return mix(input.fg, input.bg, ( min_dist.x * 100. ) );
 }
