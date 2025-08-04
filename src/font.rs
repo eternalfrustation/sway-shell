@@ -112,7 +112,7 @@ impl FontContainer {
                     (segments, offsets, locations)
                 },
             );
-        /*test_svg_from_locations(
+        test_svg_from_locations(
             &locations,
             line_points
                 .clone()
@@ -124,14 +124,8 @@ impl FontContainer {
                 .into_iter()
                 .flat_map(|v| v.to_f32_arr())
                 .collect(),
-            cubic_points
-                .clone()
-                .into_iter()
-                .flat_map(|v| v.to_f32_arr())
-                .collect(),
             '1',
         );
-*/
         dbg!(locations[&'1']);
         Self {
             linear_points_texture: if line_points.len() == 0 {
@@ -181,7 +175,6 @@ impl FontContainer {
     }
 }
 
-/*
 fn test_svg_from_locations(
     locations: &HashMap<char, GlyphInfo>,
     line_buf: Vec<f32>,
@@ -189,21 +182,42 @@ fn test_svg_from_locations(
     c: char,
 ) {
     let position = locations[&c];
-    let mut document = svg::Document::new().set("viewbox", (0., 0., 1., 1.));
+    let mut document = svg::Document::new().set("viewbox", (0., 0., 1000., 1000.)).add(
+        svg::node::element::Definitions::new().add(
+            svg::node::element::Marker::new()
+                .set("id", "arrow_tip")
+                .set("viewbox", (0, 0, 10, 10))
+                .set("refX", 5)
+                .set("refY", 5)
+                .set("markerWidth", 1)
+                .set("markerHeight", 1)
+                .set("orient", "auto-start-reverse")
+                .add(
+                    svg::node::element::Path::new().set(
+                        "d",
+                        svg::node::element::path::Data::new()
+                            .move_to((0, 0))
+                            .line_to((10, 5))
+                            .line_to((0, 10)),
+                    ),
+                ),
+        ),
+    );
     let lines_offset = position.line_off;
     let quad_offset = position.bez2_off;
     for i in lines_offset.position..(lines_offset.position + lines_offset.len) {
         let idx = i * 4;
         let x0 = line_buf[idx as usize];
         let y0 = line_buf[idx as usize + 1];
-        let p0 = Vector { x: x0, y: y0 };
+        let p0 = Vector { x: x0, y: y0 } * 1000.;
         let x1 = line_buf[idx as usize + 2];
         let y1 = line_buf[idx as usize + 3];
-        let p1 = Vector { x: x1, y: y1 };
+        let p1 = Vector { x: x1, y: y1 } * 1000.;
         document = document.add(
             svg::node::element::Path::new()
                 .set("stroke", "black")
-                .set("stroke-width", 0.001)
+                .set("stroke-width", 4)
+                .set("marker-end", "url(#arrow_tip)")
                 .set(
                     "d",
                     svg::node::element::path::Data::new()
@@ -216,19 +230,20 @@ fn test_svg_from_locations(
         let idx = i * 6;
         let x0 = quad_buf[idx as usize];
         let y0 = quad_buf[idx as usize + 1];
-        let p0 = Vector { x: x0, y: y0 };
+        let p0 = Vector { x: x0, y: y0 } * 1000.;
         let x1 = quad_buf[idx as usize + 2];
         let y1 = quad_buf[idx as usize + 3];
-        let p1 = Vector { x: x1, y: y1 };
+        let p1 = Vector { x: x1, y: y1 } * 1000.;
         let x2 = quad_buf[idx as usize + 4];
         let y2 = quad_buf[idx as usize + 5];
-        let p2 = Vector { x: x2, y: y2 };
+        let p2 = Vector { x: x2, y: y2 } * 1000.;
         dbg!(p0, p1);
         document = document.add(
             svg::node::element::Path::new()
                 .set("fill", "none")
                 .set("stroke", "black")
                 .set("stroke-width", 0.001)
+                .set("marker-end", "url(#arrow_tip)")
                 .set(
                     "d",
                     svg::node::element::path::Data::new()
@@ -239,13 +254,17 @@ fn test_svg_from_locations(
     }
     svg::save(format!("{c}.svg"), &document).unwrap()
 }
-*/
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, PartialEq, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct Vector {
     pub x: f32,
     pub y: f32,
+}
+impl Vector {
+    fn mag(&self) -> f32 {
+        (self.y * self.y + self.x * self.x).sqrt()
+    }
 }
 
 impl Add for Vector {
@@ -280,7 +299,6 @@ impl Add<f32> for Vector {
         }
     }
 }
-
 
 impl<F: Into<f32>> Mul<F> for Vector {
     type Output = Self;
@@ -332,6 +350,15 @@ pub enum Segment {
     LINE(Line),
     BEZ2(Bez2),
     BEZ3(Bez3),
+}
+impl Segment {
+    fn length_gte(&self, arg: f32) -> bool {
+        match self {
+            Segment::LINE(line) => line.length_gte(arg),
+            Segment::BEZ2(bez2) => bez2.length_gte(arg),
+            Segment::BEZ3(bez3) => bez3.length_gte(arg),
+        }
+    }
 }
 
 impl Div<f32> for Segment {
@@ -423,6 +450,10 @@ impl Line {
     fn to_f32_arr(self) -> [f32; 4] {
         [self.0.x, self.0.y, self.1.x, self.1.y]
     }
+
+    fn length_gte(&self, arg: f32) -> bool {
+        (self.1 - self.0).mag() > arg
+    }
 }
 
 impl Div<f32> for Line {
@@ -455,6 +486,15 @@ pub struct Bez2(Vector, Vector, Vector);
 impl Bez2 {
     fn to_f32_arr(&self) -> [f32; 6] {
         [self.0.x, self.0.y, self.1.x, self.1.y, self.2.x, self.2.y]
+    }
+
+    fn eval(&self, t: f32) -> Vector {
+        self.0 * (1. - t) * (1. - t) + self.1 * t * (1. - t) + self.2 * t * t
+    }
+
+    fn length_gte(&self, arg: f32) -> bool {
+        let middleish = self.eval(0.5);
+        ((self.0 - middleish).mag().abs() + (self.1 - middleish).mag().abs()) > arg
     }
 }
 
@@ -490,6 +530,18 @@ impl Bez3 {
         [
             self.0.x, self.0.y, self.1.x, self.1.y, self.2.x, self.2.y, self.3.x, self.3.y,
         ]
+    }
+
+    fn eval(&self, t: f32) -> Vector {
+        self.0 * (1. - t) * (1. - t) * (1. - t)
+            + self.1 * t * (1. - t) * (1. - t)
+            + self.2 * t * t * (1. - t)
+            + self.3 * t * t * t
+    }
+
+    fn length_gte(&self, arg: f32) -> bool {
+        let middleish = self.eval(0.5);
+        ((self.0 - middleish).mag().abs() + (self.1 - middleish).mag().abs()) > arg
     }
 }
 
@@ -542,6 +594,7 @@ impl From<Outline> for Shape {
                 .curves
                 .into_iter()
                 .map(|outline_curve| Segment::from(outline_curve))
+                .filter(|segment| segment.length_gte(1.))
                 .map(|segment| (segment + offset_vector) / scaling_vector)
                 .map(|segment| (segment / padding_scale) + padding_offset)
                 .collect(),
