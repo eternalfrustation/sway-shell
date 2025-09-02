@@ -7,6 +7,8 @@ pub mod mpd;
 pub mod renderer;
 pub mod state;
 pub mod sway;
+pub mod network;
+pub mod netlink;
 
 use layer::Display;
 use mpd::mpd_subscription;
@@ -20,6 +22,8 @@ use tokio_stream::{StreamExt, StreamMap};
 use state::State;
 use sway::sway_subscription;
 
+use crate::network::network_subscription;
+
 fn main() {
     pretty_env_logger::init();
     let rt = Arc::new(Runtime::new().expect("To be able to initalize a tokio runtime"));
@@ -30,15 +34,16 @@ fn main() {
     let (render_sender, render_receiver) = channel(1);
     let (state_sender, state_receiver) = channel(1);
     let state_stream = tokio_stream::wrappers::ReceiverStream::new(state_receiver);
-    streams.insert("sway", sway_subscription(rt.clone()));
-    streams.insert("mpd", mpd_subscription(rt.clone()));
+    streams.insert("sway", sway_subscription(rt.handle().clone()));
+    streams.insert("mpd", mpd_subscription(rt.handle().clone()));
+    streams.insert("network", network_subscription(rt.handle().clone()));
     streams.insert("display", state_stream);
     let (display_sender, display_receiver) = channel(1);
     // Currently using the merge method, ideally would use a StreamMap
     let state_event_loop_handle =
         rt.spawn(state.run_event_loop(streams.map(|(_, v)| v), render_sender));
     // IDK how else to do this
-    const HEIGHT: u32 = 200;
+    const HEIGHT: u32 = 20;
     let (display, event_queue) = rt.block_on(Display::new(HEIGHT, display_sender, state_sender));
     let wayland_conn = display.wayland_conn.clone();
     let wayland_surface = display.wayland_surface.clone();

@@ -177,35 +177,6 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
 				min_dist = d;
 			}
 		}
-
-
-		//winding += intersectingLine(input.tex_coords.xy, p0, p1);
-
-/*
-        let m = (p1.y - p0.y) / (p1.x - p1.x);
-
-        let intersecting_x = (input.tex_coords.y - p0.y) / m + p0.x;
-        if intersecting_x < input.tex_coords.x {
-			continue;
-        }
-
-		/// (1 - t) * p0 + t * p1 = p
-		/// t = (p - p0) / (p1 - p0)
-		/// Since there is no such thing as division of vectors, i am considering the y component
-        var t = (input.tex_coords.y - p0.y) / (p1.y - p0.y);
-        if abs(p1.y - p0.y) < 0.00001 {
-            t = (input.tex_coords.x - p0.x) / (p1.x - p0.x);
-        }
-        if t > 1. || t < 0. {
-			continue;
-        }
-
-        if m > 0. {
-            winding += 1;
-        } else {
-            winding -= 1;
-        }
-		*/
     }
 
     for (var i = input.quadratic_off.x; i < input.quadratic_off.x + input.quadratic_off.y; i++) {
@@ -233,20 +204,7 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
 				min_dist = d;
 			}
 		}
-		/*
-        if abs(d.x) < abs(min_dist.x) {
-            min_dist = d;
-        }
-		*/
-
-        //min_dist = min(min_dist, sdQuadratic(input.tex_coords.xy, p0, p1, p2));
     }
-/*
-    if winding != 0 {
-        return input.fg;
-    }
-*/
-
 	
-    return mix(input.fg, input.bg, ( min_dist.x * 100. ) );
+    return mix(input.fg, input.bg, ( min_dist.x * 25. ) );
 }

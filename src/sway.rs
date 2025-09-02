@@ -2,8 +2,8 @@ use std::{fmt::Display, sync::Arc};
 
 use swayipc::{Event, EventType, Node, Rect, WorkspaceChange};
 use tokio::{
-    runtime::Runtime,
-    sync::mpsc::{Sender, channel, error::SendError},
+    runtime::{Handle, Runtime},
+    sync::mpsc::{channel, error::SendError, Sender},
 };
 
 use crate::state::Message;
@@ -11,6 +11,29 @@ use crate::state::Message;
 #[derive(Debug)]
 pub enum WorkspaceFromNodeError {
     NoOutput,
+}
+
+#[derive(Debug)]
+pub enum SwayMessage {
+    WorkspaceAdd(Workspace),
+    WorkspaceDel(i64),
+    WorkspaceChangeVisiblity {
+        id: i64,
+        visible: bool,
+    },
+    WorkspaceChangeFocus {
+        id: i64,
+        focus: Vec<i64>,
+        focused: bool,
+    },
+    WorkspaceRename {
+        id: i64,
+        name: Option<String>,
+    },
+    WorkspaceChangeUrgency {
+        id: i64,
+        urgent: bool,
+    },
 }
 
 #[derive(Clone, Debug)]
@@ -106,7 +129,7 @@ impl From<SendError<Message>> for SwayError {
 fn sway_generator(output: Sender<Message>) -> Result<(), SwayError> {
     let mut conn = swayipc::Connection::new()?;
     for workspace in conn.get_workspaces()?.into_iter().map(|v| v.into()) {
-        output.blocking_send(Message::WorkspaceAdd(workspace))?;
+        output.blocking_send(Message::Sway(SwayMessage::WorkspaceAdd(workspace)))?;
     }
 
     for event in conn.subscribe([EventType::Workspace])? {
@@ -118,45 +141,45 @@ fn sway_generator(output: Sender<Message>) -> Result<(), SwayError> {
                 match event {
                     Event::Workspace(workspace_event) => match workspace_event.change {
                         WorkspaceChange::Init => {
-                            output.blocking_send(Message::WorkspaceAdd(
+                            output.blocking_send(Message::Sway(SwayMessage::WorkspaceAdd(
                                 workspace_event
                                     .current
                                     .expect("Workspace to not be null when it is created")
                                     .try_into()
                                     .expect("This to be a workspace"),
-                            ))?;
+                            )))?;
                         }
                         WorkspaceChange::Empty => {
-                            output.blocking_send(Message::WorkspaceDel(
+                            output.blocking_send(Message::Sway(SwayMessage::WorkspaceDel(
                                 workspace_event
                                     .current
                                     .expect("Workspace not null when emptying")
                                     .id,
-                            ))?;
+                            )))?;
                         }
                         WorkspaceChange::Focus => {
                             if let Some(workspace) = workspace_event.current {
-                                output.blocking_send(Message::WorkspaceChangeFocus {
+                                output.blocking_send(Message::Sway(SwayMessage::WorkspaceChangeFocus {
                                     id: workspace.id,
                                     focus: workspace.focus,
                                     focused: workspace.focused,
-                                })?;
-                                output.blocking_send(Message::WorkspaceChangeVisiblity {
+                                }))?;
+                                output.blocking_send(Message::Sway(SwayMessage::WorkspaceChangeVisiblity {
                                     id: workspace.id,
                                     visible: true,
-                                })?;
+                                }))?;
                             };
 
                             if let Some(workspace) = workspace_event.old {
-                                output.blocking_send(Message::WorkspaceChangeVisiblity {
+                                output.blocking_send(Message::Sway(SwayMessage::WorkspaceChangeVisiblity {
                                     id: workspace.id,
                                     visible: false,
-                                })?;
-                                output.blocking_send(Message::WorkspaceChangeFocus {
+                                }))?;
+                                output.blocking_send(Message::Sway(SwayMessage::WorkspaceChangeFocus {
                                     id: workspace.id,
                                     focus: workspace.focus,
                                     focused: workspace.focused,
-                                })?;
+                                }))?;
                             };
                         }
                         WorkspaceChange::Move => {
@@ -166,26 +189,26 @@ fn sway_generator(output: Sender<Message>) -> Result<(), SwayError> {
                             output.blocking_send(
                                 workspace_event
                                     .current
-                                    .map(|v| Message::WorkspaceRename {
+                                    .map(|v| Message::Sway(SwayMessage::WorkspaceRename {
                                         id: v.id,
                                         name: v.name,
-                                    })
+                                    }))
                                     .expect("Workspace not null when emptying"),
                             )?;
                         }
                         WorkspaceChange::Urgent => {
                             if let Some(workspace) = workspace_event.current {
-                                output.blocking_send(Message::WorkspaceChangeUrgency {
+                                output.blocking_send(Message::Sway(SwayMessage::WorkspaceChangeUrgency {
                                     id: workspace.id,
                                     urgent: workspace.urgent,
-                                })?;
+                                }))?;
                             }
 
                             if let Some(workspace) = workspace_event.old {
-                                output.blocking_send(Message::WorkspaceChangeUrgency {
+                                output.blocking_send(Message::Sway(SwayMessage::WorkspaceChangeUrgency {
                                     id: workspace.id,
                                     urgent: workspace.urgent,
-                                })?;
+                                }))?;
                             }
                         }
                         WorkspaceChange::Reload => {
@@ -203,7 +226,7 @@ fn sway_generator(output: Sender<Message>) -> Result<(), SwayError> {
     Ok(())
 }
 
-pub fn sway_subscription(rt: Arc<Runtime>) -> tokio_stream::wrappers::ReceiverStream<Message> {
+pub fn sway_subscription(rt: Handle) -> tokio_stream::wrappers::ReceiverStream<Message> {
     let (sender, receiver) = channel(1);
     rt.spawn_blocking(move || {
         loop {

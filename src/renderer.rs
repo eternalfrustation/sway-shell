@@ -1,4 +1,5 @@
 use std::mem;
+
 use std::{borrow::Cow, ptr::NonNull, sync::Arc};
 
 use bytemuck::Zeroable;
@@ -10,9 +11,7 @@ use tokio::{
     sync::{RwLock, mpsc::Receiver},
 };
 use wayland_client::{Proxy, protocol::wl_surface::WlSurface};
-use wgpu::{
-    AddressMode, DeviceDescriptor, FilterMode, SamplerDescriptor,
-};
+use wgpu::{AddressMode, DeviceDescriptor, FilterMode, SamplerDescriptor};
 use wgpu::{Buffer, BufferDescriptor, IndexFormat, PresentMode, RenderPipeline, util::DeviceExt};
 
 use crate::font::{FontContainer, GlyphOffLen};
@@ -135,6 +134,7 @@ pub struct Renderer {
     pub device: wgpu::Device,
     pub queue: wgpu::Queue,
     pub surface: wgpu::Surface<'static>,
+    pub surface_config: wgpu::SurfaceConfiguration,
     pub render_pipeline: RenderPipeline,
     pub square_vb: Buffer,
     pub square_ib: Buffer,
@@ -215,7 +215,7 @@ impl Renderer {
         // Loading the font
         // Need to write custom code for this part
         let font_container = FontContainer::new(
-            "|QWERTYUIOPASDFGHJKLZXCVBNMqwertyuiopasdfghjklzxcvbnm1234567890[];',./<>?:\"{}+_)(*&^%$#@!~`=",
+            "|QWERTYUIOPASDFGHJKLZXCVBNMqwertyuiopasdfghjklzxcvbnm1234567890[];',./<>?:\"{}+_)(*&^%$#@!~`= ",
         );
         // Load the shaders from disk
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
@@ -397,6 +397,9 @@ impl Renderer {
         });
 
         Self {
+            surface_config: surface
+                .get_default_config(&adapter, width, height)
+                .expect("Adapter and surface to be compatible"),
             font_sdf: font_container,
             width,
             height,
@@ -421,6 +424,10 @@ impl Renderer {
         let surface = &self.surface;
         let device = &self.device;
         let queue = &self.queue;
+
+        // Wait for GPU to do stuff, so that get_current_texture doesn't timeout
+        surface.configure(device, &self.surface_config);
+
         let surface_texture = surface
             .get_current_texture()
             .expect("failed to acquire next swapchain texture");
@@ -457,7 +464,7 @@ impl Renderer {
                     (offset + shape_location.aspect_ratio.abs(), instances)
                 },
             );
-        const MPD_PROGRESS_WIDTH: f32 = 1.;
+        const MPD_PROGRESS_WIDTH: f32 = 4.;
         if let Some(ref mpd) = state.mpd_status {
             if let Some((elapsed, duration)) = mpd.elapsed.zip(mpd.duration) {
                 let progress = elapsed.as_secs_f32() / duration.as_secs_f32();
@@ -565,6 +572,7 @@ impl Renderer {
         config.present_mode = PresentMode::Fifo;
         self.surface.configure(&self.device, &config);
         self.queue.submit([]);
+        self.surface_config = config;
     }
 
     pub async fn run_event_loop(
@@ -587,9 +595,7 @@ impl Renderer {
 
         let render_handle = handle.spawn(async move {
             while let Some(state) = render_receiver.recv().await {
-                log::info!("Received signal that drawing is requested");
                 renderer.read().await.draw_frame(&state);
-                log::info!("Drew the frame");
             }
         });
         display_handle

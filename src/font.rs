@@ -112,7 +112,7 @@ impl FontContainer {
                     (segments, offsets, locations)
                 },
             );
-        test_svg_from_locations(
+        /*test_svg_from_locations(
             &locations,
             line_points
                 .clone()
@@ -127,6 +127,7 @@ impl FontContainer {
             '1',
         );
         dbg!(locations[&'1']);
+*/
         Self {
             linear_points_texture: if line_points.len() == 0 {
                 vec![0., 0., 0., 0.]
@@ -175,6 +176,7 @@ impl FontContainer {
     }
 }
 
+/*
 fn test_svg_from_locations(
     locations: &HashMap<char, GlyphInfo>,
     line_buf: Vec<f32>,
@@ -254,6 +256,7 @@ fn test_svg_from_locations(
     }
     svg::save(format!("{c}.svg"), &document).unwrap()
 }
+*/
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, PartialEq, bytemuck::Pod, bytemuck::Zeroable)]
