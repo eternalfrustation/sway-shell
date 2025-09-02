@@ -1,6 +1,4 @@
 use tokio::sync::mpsc::channel;
-use tokio::sync::mpsc::error::SendError;
-use tokio::time::MissedTickBehavior;
 use tokio::{runtime::Handle, sync::mpsc::Sender};
 
 use crate::netlink::ethtool::EthtoolPhy;

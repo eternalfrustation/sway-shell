@@ -1,8 +1,8 @@
-use std::{fmt::Display, sync::Arc};
+use std::fmt::Display;
 
 use swayipc::{Event, EventType, Node, Rect, WorkspaceChange};
 use tokio::{
-    runtime::{Handle, Runtime},
+    runtime::Handle,
     sync::mpsc::{channel, error::SendError, Sender},
 };
 

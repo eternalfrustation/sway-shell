@@ -1,20 +1,16 @@
 use neli::{
-    FromBytes, TypeSize,
+    FromBytes,
     attr::Attribute,
     consts::{
         nl::NlmF,
-        rtnl::{Ifla, IflaStats, RtAddrFamily, Rtm},
-        socket::NlFamily,
+        rtnl::{IflaStats, RtAddrFamily, Rtm},
     },
     err::RouterError,
-    genl::{Genlmsghdr, GenlmsghdrBuilder},
     nl::NlPayload,
-    router::asynchronous::{NlRouter, NlRouterReceiverHandle},
-    rtnl::{Ifinfomsg, IfinfomsgBuilder, Ifstatsmsg, IfstatsmsgBuilder},
-    utils::Groups,
+    rtnl::{Ifstatsmsg, IfstatsmsgBuilder},
 };
 
-use crate::netlink::{MacAddr, Netlink, NetlinkCommandError, NetlinkRetrievable};
+use crate::netlink::{Netlink, NetlinkCommandError, NetlinkRetrievable};
 
 #[derive(Debug, Clone, FromBytes)]
 pub struct Link64 {

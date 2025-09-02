@@ -1,11 +1,11 @@
 use std::{
-    env::VarError, fmt::Display, os::unix::net::UnixStream, path::PathBuf, sync::Arc,
+    env::VarError, fmt::Display, os::unix::net::UnixStream, path::PathBuf,
     time::Duration,
 };
 
 use mpd::{Idle, Subsystem};
 use tokio::{
-    runtime::{Handle, Runtime},
+    runtime::Handle,
     sync::mpsc::{Sender, channel, error::SendError},
     time::MissedTickBehavior,
 };
