@@ -14,59 +14,59 @@ use crate::netlink::{MacAddr, Netlink, NetlinkCommandError, NetlinkRetrievable};
 
 #[derive(Debug, Clone, FromBytes)]
 pub struct LinkStats64 {
-    rx_packets: u64,
-    tx_packets: u64,
-    rx_bytes: u64,
-    tx_bytes: u64,
-    rx_errors: u64,
-    tx_errors: u64,
-    rx_dropped: u64,
-    tx_dropped: u64,
-    multicast: u64,
-    collisions: u64,
-    rx_length_errors: u64,
-    rx_over_errors: u64,
-    rx_crc_errors: u64,
-    rx_frame_errors: u64,
-    rx_fifo_errors: u64,
-    rx_missed_errors: u64,
-    tx_aborted_errors: u64,
-    tx_carrier_errors: u64,
-    tx_fifo_errors: u64,
-    tx_heartbeat_errors: u64,
-    tx_window_errors: u64,
-    rx_compressed: u64,
-    tx_compressed: u64,
-    rx_nohandler: u64,
-    rx_otherhost_dropped: u64,
+    pub rx_packets: u64,
+    pub tx_packets: u64,
+    pub rx_bytes: u64,
+    pub tx_bytes: u64,
+    pub rx_errors: u64,
+    pub tx_errors: u64,
+    pub rx_dropped: u64,
+    pub tx_dropped: u64,
+    pub multicast: u64,
+    pub collisions: u64,
+    pub rx_length_errors: u64,
+    pub rx_over_errors: u64,
+    pub rx_crc_errors: u64,
+    pub rx_frame_errors: u64,
+    pub rx_fifo_errors: u64,
+    pub rx_missed_errors: u64,
+    pub tx_aborted_errors: u64,
+    pub tx_carrier_errors: u64,
+    pub tx_fifo_errors: u64,
+    pub tx_heartbeat_errors: u64,
+    pub tx_window_errors: u64,
+    pub rx_compressed: u64,
+    pub tx_compressed: u64,
+    pub rx_nohandler: u64,
+    pub rx_otherhost_dropped: u64,
 }
 
 #[derive(Debug, Clone, FromBytes)]
 pub struct LinkStats {
-    rx_packets: u32,
-    tx_packets: u32,
-    rx_bytes: u32,
-    tx_bytes: u32,
-    rx_errors: u32,
-    tx_errors: u32,
-    rx_dropped: u32,
-    tx_dropped: u32,
-    multicast: u32,
-    collisions: u32,
-    rx_length_errors: u32,
-    rx_over_errors: u32,
-    rx_crc_errors: u32,
-    rx_frame_errors: u32,
-    rx_fifo_errors: u32,
-    rx_missed_errors: u32,
-    tx_aborted_errors: u32,
-    tx_carrier_errors: u32,
-    tx_fifo_errors: u32,
-    tx_heartbeat_errors: u32,
-    tx_window_errors: u32,
-    rx_compressed: u32,
-    tx_compressed: u32,
-    rx_nohandler: u32,
+    pub rx_packets: u32,
+    pub tx_packets: u32,
+    pub rx_bytes: u32,
+    pub tx_bytes: u32,
+    pub rx_errors: u32,
+    pub tx_errors: u32,
+    pub rx_dropped: u32,
+    pub tx_dropped: u32,
+    pub multicast: u32,
+    pub collisions: u32,
+    pub rx_length_errors: u32,
+    pub rx_over_errors: u32,
+    pub rx_crc_errors: u32,
+    pub rx_frame_errors: u32,
+    pub rx_fifo_errors: u32,
+    pub rx_missed_errors: u32,
+    pub tx_aborted_errors: u32,
+    pub tx_carrier_errors: u32,
+    pub tx_fifo_errors: u32,
+    pub tx_heartbeat_errors: u32,
+    pub tx_window_errors: u32,
+    pub rx_compressed: u32,
+    pub tx_compressed: u32,
+    pub rx_nohandler: u32,
 }
 
 #[neli::neli_enum(serialized_type = "u8")]
@@ -303,81 +303,83 @@ impl TypeSize for Inet6Stats {
 
 #[derive(Debug, Clone, derive_builder::Builder)]
 pub struct LinkInfo {
-    address: MacAddr,
-    broadcast: MacAddr,
-    ifname: String,
-    mtu: u32,
-    qdisc: String,
+    pub ifi_index: i32,
+    pub address: MacAddr,
+    pub broadcast: MacAddr,
+    pub ifname: String,
+    pub mtu: u32,
+    pub qdisc: String,
     #[builder(default)]
-    link: Option<u32>,
-    stats: LinkStats,
+    pub link: Option<u32>,
+    pub stats: LinkStats,
     #[builder(default)]
-    cost: Option<String>,
+    pub cost: Option<String>,
     #[builder(default)]
-    priority: Option<String>,
+    pub priority: Option<String>,
     #[builder(default)]
-    master: Option<u32>,
-    txqlen: u32,
-    map: LinkIfMap,
+    pub master: Option<u32>,
+    pub txqlen: u32,
+    pub map: LinkIfMap,
     #[builder(default)]
-    weight: Option<u32>,
-    operstate: u8,
-    linkmode: u8,
+    pub weight: Option<u32>,
+    pub operstate: u8,
+    pub linkmode: u8,
     #[builder(default)]
-    net_ns_pid: Option<u32>,
+    pub net_ns_pid: Option<u32>,
     #[builder(default)]
-    ifalias: Option<String>,
+    pub ifalias: Option<String>,
     #[builder(default)]
-    num_vf: Option<u32>,
-    stats64: LinkStats64,
-    group: u32,
+    pub num_vf: Option<u32>,
+    pub stats64: LinkStats64,
+    pub group: u32,
     #[builder(default)]
-    net_ns_fd: Option<u32>,
-    promiscuity: u32,
-    num_tx_queues: u32,
-    num_rx_queues: u32,
-    carrier: u8,
-    carrier_changes: u32,
+    pub net_ns_fd: Option<u32>,
+    pub promiscuity: u32,
+    pub num_tx_queues: u32,
+    pub num_rx_queues: u32,
+    pub carrier: u8,
+    pub carrier_changes: u32,
     #[builder(default)]
-    link_netnsid: Option<i32>,
+    pub link_netnsid: Option<i32>,
     #[builder(default)]
-    phys_port_name: Option<String>,
-    proto_down: u8,
-    gso_max_segs: u32,
-    gso_max_size: u32,
+    pub phys_port_name: Option<String>,
+    pub proto_down: u8,
+    pub gso_max_segs: u32,
+    pub gso_max_size: u32,
     #[builder(default)]
-    event: Option<u32>,
+    pub event: Option<u32>,
     #[builder(default)]
-    new_netnsid: Option<i32>,
+    pub new_netnsid: Option<i32>,
     #[builder(default)]
-    target_netnsid: Option<i32>,
-    carrier_up_count: u32,
-    carrier_down_count: u32,
+    pub target_netnsid: Option<i32>,
+    pub carrier_up_count: u32,
+    pub carrier_down_count: u32,
     #[builder(default)]
-    new_ifindex: Option<i32>,
-    min_mtu: u32,
-    max_mtu: u32,
+    pub new_ifindex: Option<i32>,
+    pub min_mtu: u32,
+    pub max_mtu: u32,
     #[builder(default)]
-    alt_ifname: Option<String>,
-    perm_address: MacAddr,
+    pub alt_ifname: Option<String>,
     #[builder(default)]
-    proto_down_reason: Option<String>,
+    pub perm_address: Option<MacAddr>,
     #[builder(default)]
-    parent_dev_name: Option<String>,
+    pub proto_down_reason: Option<String>,
     #[builder(default)]
-    parent_dev_bus_name: Option<String>,
+    pub parent_dev_name: Option<String>,
     #[builder(default)]
-    gro_max_size: Option<u32>,
+    pub parent_dev_bus_name: Option<String>,
     #[builder(default)]
-    tso_max_size: Option<u32>,
+    pub gro_max_size: Option<u32>,
     #[builder(default)]
-    tso_max_segs: Option<u32>,
+    pub tso_max_size: Option<u32>,
     #[builder(default)]
-    allmulti: Option<u32>,
+    pub tso_max_segs: Option<u32>,
     #[builder(default)]
-    gso_ipv4_max_size: Option<u32>,
+    pub allmulti: Option<u32>,
     #[builder(default)]
-    gro_ipv4_max_size: Option<u32>,
+    pub gso_ipv4_max_size: Option<u32>,
+    #[builder(default)]
+    pub gro_ipv4_max_size: Option<u32>,
 }
 
 impl NetlinkRetrievable<RoutelinkStatsError> for LinkInfo {
@@ -408,6 +410,7 @@ impl NetlinkRetrievable<RoutelinkStatsError> for LinkInfo {
             };
 
             let mut link_builder = LinkInfoBuilder::default();
+            link_builder.ifi_index(*payload.ifi_index());
             let attr_handle = payload.rtattrs().get_attr_handle();
             for attr in attr_handle.iter() {
                 use neli::consts::rtnl::Ifla::*;
@@ -712,8 +715,8 @@ impl NetlinkRetrievable<RoutelinkStatsError> for LinkInfo {
                     }
                     PermAddress => {
                         link_builder.perm_address(
-                            attr.get_payload_as()
-                                .expect("PermAddress to be a valid mac address"),
+                            Some( attr.get_payload_as()
+                                .expect("PermAddress to be a valid mac address"), )
                         );
                     }
                     ProtoDownReason => {
