@@ -3,7 +3,7 @@ use tokio::{runtime::Handle, sync::mpsc::Sender};
 
 use crate::netlink::ethtool::EthtoolPhy;
 use crate::netlink::nl80211::Nl80211Interface;
-use crate::netlink::routel::RtLinkStats;
+use crate::netlink::routel::{LinkInfo, LinkStats64};
 use crate::netlink::{Netlink, NetlinkCommandError, NetlinkInitError};
 use crate::state::Message;
 
@@ -48,8 +48,8 @@ async fn network_generator(sender: Sender<Message>) -> Result<(), NetworkError> 
     loop {
         let interfaces: Result<Vec<Nl80211Interface>, _> = netlink.retrieve().await;
         let interfaces: Result<Vec<EthtoolPhy>, _> = netlink.retrieve().await;
-        let interfaces: Result<Vec<RtLinkStats>, _> = netlink.retrieve().await;
-        println!("{interfaces:?}");
+        let interfaces: Result<Vec<LinkInfo>, _> = netlink.retrieve().await;
+        println!("{interfaces:#?}");
         interval.tick().await;
     }
 }

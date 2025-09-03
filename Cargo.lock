@@ -761,7 +761,7 @@ dependencies = [
 [[package]]
 name = "neli"
 version = "0.7.1"
-source = "git+https://github.com/eternalfrustation/neli#f6e29854a1e28f00bf039a0976cb0cf87312cf1d"
+source = "git+https://github.com/eternalfrustation/neli#5b4e1f118dc0999b8077f4298a7157fc083589c5"
 dependencies = [
  "bitflags",
  "byteorder",
@@ -777,7 +777,7 @@ dependencies = [
 [[package]]
 name = "neli-proc-macros"
 version = "0.2.1"
-source = "git+https://github.com/eternalfrustation/neli#f6e29854a1e28f00bf039a0976cb0cf87312cf1d"
+source = "git+https://github.com/eternalfrustation/neli#5b4e1f118dc0999b8077f4298a7157fc083589c5"
 dependencies = [
  "either",
  "proc-macro2",

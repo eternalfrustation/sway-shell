@@ -17,7 +17,7 @@ use neli::{
 
 use crate::netlink::ethtool::EthtoolError;
 use crate::netlink::nl80211::Nl80211Error;
-use crate::netlink::routel::RoutelinkError;
+use crate::netlink::routel::{ RoutelinkStatsError,RoutelinkInfoError };
 
 #[derive(Debug, Clone)]
 pub struct WifiStation {
@@ -64,7 +64,8 @@ pub enum NetlinkCommandError {
     MsgHdrError(GenlmsghdrBuilderError),
 
     Nl80211CommandRouterError(Nl80211Error),
-    RtCommandRouterError(RoutelinkError),
+    RtStatsCommandRouterError(RoutelinkStatsError),
+    RtInfoCommandRouterError(RoutelinkInfoError),
     EthtoolCommandRouterError(EthtoolError),
 }
 
