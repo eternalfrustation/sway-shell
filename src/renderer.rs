@@ -513,6 +513,57 @@ impl Renderer {
             }
         }
 
+        let (mut offset, mut instance_data) = state
+            .networks
+            .iter()
+            .map(|network| match network {
+                crate::network::Network::Wifi {
+                    if_index,
+                    if_name,
+                    ssid,
+                    up,
+                    down,
+                    up_rate,
+                    down_rate,
+                } => {
+                    if let Some(ssid) = ssid {
+                        format!("{up_rate} : {down_rate} {ssid} - {if_name}")
+                    } else {
+                        String::new()
+                    }
+                }
+                crate::network::Network::Network {
+                    if_index,
+                    name,
+                    up,
+                    down,
+                    up_rate,
+                    down_rate,
+                } => format!("{up_rate} : {down_rate} Wired - {name}"),
+            })
+            .fold(
+                (offset, instance_data),
+                |(mut offset, mut instance_data), network| {
+                    for shape_location in network
+                        .chars()
+                        .flat_map(|c| self.font_sdf.locations.get(&c))
+                    {
+                        instance_data.push(Instance {
+                            position: [offset, 0.],
+                            scale: [shape_location.aspect_ratio.abs(), 1.],
+                            fg: 0xffffffff,
+                            bg: 0xff000000,
+                            lines_off: shape_location.line_off,
+                            quadratic_off: shape_location.bez2_off,
+                            cubic_off: shape_location.bez3_off,
+                        });
+                        offset += shape_location.aspect_ratio.abs();
+                    }
+
+                    (offset, instance_data)
+                },
+            );
+
         queue.write_buffer(
             &self.instance_buffer,
             0,
