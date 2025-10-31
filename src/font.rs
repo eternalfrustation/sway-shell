@@ -171,7 +171,10 @@ impl FontContainer {
     }
 
     pub fn load_char_with_id(&mut self, id: GlyphId) -> Option<GlyphInfo> {
-        self.load_char(self.char_map[&id])
+            match self.char_map.get(&id) {
+                Some(x) => return self.load_char(*x),
+                None => None,
+            }
     }
 
     pub fn load_char(&mut self, c: char) -> Option<GlyphInfo> {
@@ -201,14 +204,12 @@ impl FontContainer {
                 Segment::BEZ2(bez2) => {
                     self.quadratic_curve_offsets
                         .push(self.quadratic_points_buffer.len() as u32 / 6);
-                    dbg!(self.linear_points_buffer.len());
                     self.quadratic_points_buffer.extend(bez2.to_f32_arr());
                 }
                 Segment::BEZ3(bez3) => {
                     self.cubic_curve_offsets
                         .push(self.cubic_points_buffer.len() as u32 / 8);
                     self.cubic_points_buffer.extend(bez3.to_f32_arr());
-                    dbg!(bez3.to_f32_arr());
                 }
             }
         }

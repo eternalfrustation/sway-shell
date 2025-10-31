@@ -486,10 +486,36 @@ impl Renderer {
         for item in state.left.iter() {
             match item {
                 Renderable::Text { text, fg, bg } => {
+
+                    
+                    let id = match text.chars().map(|c| self.font_sdf.font_arc.glyph_id(c)).next() {
+                        Some(id) => id,
+                        None => continue,
+                    };
+
+                        let glyph_info = match self.font_sdf.load_char_with_id(id) {
+                            Some(x) => {
+                                self.update_font();
+                                x
+                            }
+                            None => continue,
+                        };
+                        instances.push(Instance {
+                            position: [skip + glyph_info.offset.x, -0.5 + glyph_info.offset.y],
+                            scale: [glyph_info.dimensions.x, -glyph_info.dimensions.y],
+                            fg: *fg,
+                            bg: *bg,
+                            lines_off: glyph_info.line_off,
+                            quadratic_off: glyph_info.bez2_off,
+                            cubic_off: glyph_info.bez3_off,
+                        });
+                    skip += 
+                    glyph_info.advance;
+
                     for (prev_id, id) in
                         Vec::from_iter(text.chars().map(|c| self.font_sdf.font_arc.glyph_id(c)))
                             .into_iter()
-                            .circular_tuple_windows()
+                            .tuple_windows()
                     {
                         let glyph_info = match self.font_sdf.load_char_with_id(id) {
                             Some(x) => {
