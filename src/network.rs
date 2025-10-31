@@ -90,7 +90,7 @@ impl Network {
                             .unwrap_or_default(),
                         down_rate: prev_link_stats
                             .map(|(_, prev_down)| {
-                                (link.stats64.tx_bytes.saturating_sub(*prev_down))
+                                (link.stats64.rx_bytes.saturating_sub(*prev_down))
                                     / interval.as_secs()
                             })
                             .unwrap_or_default(),
@@ -108,7 +108,7 @@ impl Network {
                             .unwrap_or_default(),
                         down_rate: prev_link_stats
                             .map(|(_, prev_down)| {
-                                (link.stats64.tx_bytes.saturating_sub(*prev_down)) / interval.as_secs()
+                                (link.stats64.rx_bytes.saturating_sub(*prev_down)) / interval.as_secs()
                             })
                             .unwrap_or_default(),
                     }
@@ -163,7 +163,6 @@ async fn network_generator(sender: Sender<Message>) -> Result<(), NetworkError> 
             duration,
         );
         prev_link_info = networks.clone();
-        println!("{:#?}", networks);
         sender.send(Message::Network(networks)).await?;
     }
 }

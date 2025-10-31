@@ -1,7 +1,4 @@
-use std::{
-    env::VarError, fmt::Display, os::unix::net::UnixStream, path::PathBuf,
-    time::Duration,
-};
+use std::{env::VarError, fmt::Display, os::unix::net::UnixStream, path::PathBuf};
 
 use mpd::{Idle, Subsystem};
 use tokio::{
@@ -24,7 +21,7 @@ enum MpdError {
 pub enum MpdMessage {
     MpdPlayerUpdate { status: mpd::Status },
     MpdSongUpdate { song: Option<mpd::Song> },
-    MpdTimeElapsed { elapsed: Duration },
+    MpdTimeElapsed { status: mpd::Status },
 }
 
 impl Display for MpdError {
@@ -74,9 +71,9 @@ async fn song_duration_generator(output: Sender<Message>, mpd_socket_conn: PathB
     if let Ok(mut conn) = conn {
         loop {
             let status = conn.status().ok();
-            if let Some(Some(elapsed)) = status.map(|s| s.elapsed) {
+            if let Some(status) = status {
                 match output
-                    .send(Message::Mpd(MpdMessage::MpdTimeElapsed { elapsed }))
+                    .send(Message::Mpd(MpdMessage::MpdTimeElapsed { status: status }))
                     .await
                 {
                     Ok(()) => {}

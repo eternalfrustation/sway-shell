@@ -3,18 +3,18 @@ use std::{
     ops::{Add, Div, Mul, Sub},
 };
 
-use ab_glyph::{Font, FontRef, Outline, OutlineCurve, Point};
+use ab_glyph::{Font, FontArc, FontRef, GlyphId, OutlineCurve, Point};
 
 pub const FONT_DATA: &[u8] = include_bytes!("test_font.ttf");
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct FontContainer {
     /// This texture holds the points for lines
-    pub linear_points_texture: Vec<f32>,
+    pub linear_points_buffer: Vec<f32>,
     /// This texture holds the points for quadratic bezier curves
-    pub quadratic_points_texture: Vec<f32>,
+    pub quadratic_points_buffer: Vec<f32>,
     /// This texture holds the points for cubic bezier curves
-    pub cubic_points_texture: Vec<f32>,
+    pub cubic_points_buffer: Vec<f32>,
 
     /// Offsets for the curve points in the texture defined above
     /// For the units of offset, refer to ShapeLocation::offset
@@ -25,6 +25,11 @@ pub struct FontContainer {
 
     /// Locations of characters in the curve_offsets, defined in curve_offsets
     pub locations: HashMap<char, GlyphInfo>,
+
+    /// The original font parsed into a struct
+    pub font_arc: FontArc,
+
+    pub char_map: HashMap<GlyphId, char>,
 }
 
 #[repr(C)]
@@ -41,35 +46,44 @@ pub struct GlyphOffLen {
 }
 
 #[repr(C)]
-#[derive(Debug, Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+#[derive(Debug, Clone, Copy)]
 pub struct GlyphInfo {
     pub line_off: GlyphOffLen,
     pub bez2_off: GlyphOffLen,
     pub bez3_off: GlyphOffLen,
-    /// aspect ratio for this shape
-    /// Since all shapes are normalized, you need this to get the proper width
-    pub aspect_ratio: f32,
+
+    /// Normalized dimensions in 0..1 range
+    pub dimensions: Vec2,
+
+    /// Normalized offset in 0..1 range
+    pub offset: Vec2,
+
+    /// GlyphId corresponding to the font
+    pub glyph_id: GlyphId,
+
+    pub advance: f32,
 }
 
 impl FontContainer {
     pub fn new(available_chars: &str) -> Self {
-        let font_ref = FontRef::try_from_slice(FONT_DATA).expect("The font to be a valid file");
+        let font_arc = FontArc::try_from_slice(FONT_DATA).expect("The font to be a valid file");
+        let units_per_em = font_arc.units_per_em().unwrap_or(16384.0);
+        let char_map = HashMap::from_iter(font_arc.codepoint_ids());
         let (
             (line_points, quadratic_points, cubic_points),
             (line_curve_offsets, quadratic_curve_offsets, cubic_curve_offsets),
             locations,
         ) = available_chars
             .chars()
-            .map(|c| (c, font_ref.glyph_id(c)))
-            .flat_map(|(c, id)| font_ref.outline(id).map(|outline| (c, outline)))
-            .map(|(c, outline)| (c, Shape::from(outline)))
+            .map(|c| (c, font_arc.glyph_id(c)))
+            .flat_map(|(c, id)| Shape::from_glyph(font_arc.clone(), id).map(|shape| (c, shape, id)))
             .fold(
                 (
                     (Vec::<Line>::new(), Vec::<Bez2>::new(), Vec::<Bez3>::new()),
                     (Vec::<u32>::new(), Vec::<u32>::new(), Vec::<u32>::new()),
                     HashMap::new(),
                 ),
-                |(mut segments, mut offsets, mut locations), (c, shape)| {
+                |(mut segments, mut offsets, mut locations), (c, shape, glyph_id)| {
                     let (lines_offset, bez2_offset, bez3_offset) = (
                         offsets.0.len() as u32,
                         offsets.1.len() as u32,
@@ -94,6 +108,8 @@ impl FontContainer {
                     locations.insert(
                         c,
                         GlyphInfo {
+                            glyph_id,
+                            advance: font_arc.h_advance_unscaled(glyph_id) / units_per_em,
                             line_off: GlyphOffLen {
                                 position: lines_offset,
                                 len: segments.0.len() as u32 - lines_offset,
@@ -106,73 +122,117 @@ impl FontContainer {
                                 position: bez3_offset,
                                 len: segments.2.len() as u32 - bez3_offset,
                             },
-                            aspect_ratio: shape.aspect_ratio,
+                            dimensions: shape.dimensions,
+                            offset: shape.offset,
                         },
                     );
                     (segments, offsets, locations)
                 },
             );
         /*test_svg_from_locations(
-            &locations,
-            line_points
-                .clone()
-                .into_iter()
-                .flat_map(|v| v.to_f32_arr())
-                .collect(),
-            quadratic_points
-                .clone()
-                .into_iter()
-                .flat_map(|v| v.to_f32_arr())
-                .collect(),
-            '1',
-        );
-        dbg!(locations[&'1']);
-*/
+                    &locations,
+                    line_points
+                        .clone()
+                        .into_iter()
+                        .flat_map(|v| v.to_f32_arr())
+                        .collect(),
+                    quadratic_points
+                        .clone()
+                        .into_iter()
+                        .flat_map(|v| v.to_f32_arr())
+                        .collect(),
+                    '1',
+                );
+                dbg!(locations[&'1']);
+        */
         Self {
-            linear_points_texture: if line_points.len() == 0 {
-                vec![0., 0., 0., 0.]
-            } else {
-                line_points
-                    .clone()
-                    .into_iter()
-                    .flat_map(|v| v.to_f32_arr())
-                    .collect()
-            },
-            quadratic_points_texture: if quadratic_points.len() == 0 {
-                vec![0., 0., 0., 0., 0., 0.]
-            } else {
-                quadratic_points
-                    .clone()
-                    .into_iter()
-                    .flat_map(|v| v.to_f32_arr())
-                    .collect()
-            },
-            cubic_points_texture: if cubic_points.len() == 0 {
-                vec![0., 0., 0., 0., 0., 0., 0., 0.]
-            } else {
-                cubic_points
-                    .clone()
-                    .into_iter()
-                    .flat_map(|v| v.to_f32_arr())
-                    .collect()
-            },
-            line_curve_offsets: if line_curve_offsets.len() == 0 {
-                vec![0]
-            } else {
-                line_curve_offsets
-            },
-            quadratic_curve_offsets: if quadratic_curve_offsets.len() == 0 {
-                vec![0]
-            } else {
-                quadratic_curve_offsets
-            },
-            cubic_curve_offsets: if cubic_curve_offsets.len() == 0 {
-                vec![0]
-            } else {
-                cubic_curve_offsets
-            },
+            char_map,
+            linear_points_buffer: line_points
+                .clone()
+                .into_iter()
+                .flat_map(|v| v.to_f32_arr())
+                .collect(),
+            quadratic_points_buffer: quadratic_points
+                .clone()
+                .into_iter()
+                .flat_map(|v| v.to_f32_arr())
+                .collect(),
+            cubic_points_buffer: cubic_points
+                .clone()
+                .into_iter()
+                .flat_map(|v| v.to_f32_arr())
+                .collect(),
+            line_curve_offsets,
+            quadratic_curve_offsets,
+            cubic_curve_offsets,
             locations,
+            font_arc: font_arc.into(),
         }
+    }
+
+    pub fn load_char_with_id(&mut self, id: GlyphId) -> Option<GlyphInfo> {
+        self.load_char(self.char_map[&id])
+    }
+
+    pub fn load_char(&mut self, c: char) -> Option<GlyphInfo> {
+        let units_per_em = self.font_arc.units_per_em().unwrap_or(16384.0);
+        if let Some(x) = self.locations.get(&c) {
+            return Some(*x);
+        }
+        let glyph_id = self.font_arc.glyph_id(c);
+        let shape = match Shape::from_glyph(self.font_arc.clone(), glyph_id) {
+            Some(x) => x,
+            None => return None,
+        };
+
+        let (lines_offset, bez2_offset, bez3_offset) = (
+            self.linear_points_buffer.len() as u32 / 4,
+            self.quadratic_points_buffer.len() as u32 / 6,
+            self.cubic_points_buffer.len() as u32 / 8,
+        );
+
+        for segment in shape.segments.into_iter() {
+            match segment {
+                Segment::LINE(line) => {
+                    self.line_curve_offsets
+                        .push(self.linear_points_buffer.len() as u32 / 4);
+                    self.linear_points_buffer.extend(line.to_f32_arr());
+                }
+                Segment::BEZ2(bez2) => {
+                    self.quadratic_curve_offsets
+                        .push(self.quadratic_points_buffer.len() as u32 / 6);
+                    dbg!(self.linear_points_buffer.len());
+                    self.quadratic_points_buffer.extend(bez2.to_f32_arr());
+                }
+                Segment::BEZ3(bez3) => {
+                    self.cubic_curve_offsets
+                        .push(self.cubic_points_buffer.len() as u32 / 8);
+                    self.cubic_points_buffer.extend(bez3.to_f32_arr());
+                    dbg!(bez3.to_f32_arr());
+                }
+            }
+        }
+        let glyph_info = GlyphInfo {
+            glyph_id,
+            advance: self.font_arc.h_advance_unscaled(glyph_id) / units_per_em,
+            line_off: GlyphOffLen {
+                position: lines_offset,
+                len: self.linear_points_buffer.len() as u32 / 4 - lines_offset,
+            },
+            bez2_off: GlyphOffLen {
+                position: bez2_offset,
+                len: self.quadratic_points_buffer.len() as u32 / 6 - bez2_offset,
+            },
+            bez3_off: GlyphOffLen {
+                position: bez3_offset,
+                len: self.cubic_points_buffer.len() as u32 / 8 - bez3_offset,
+            },
+            offset: shape.offset,
+            dimensions: shape.dimensions,
+        };
+        self.locations.insert(c, glyph_info);
+
+        Some(glyph_info)
     }
 }
 
@@ -260,18 +320,18 @@ fn test_svg_from_locations(
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, PartialEq, bytemuck::Pod, bytemuck::Zeroable)]
-pub struct Vector {
+pub struct Vec2 {
     pub x: f32,
     pub y: f32,
 }
-impl Vector {
+impl Vec2 {
     fn mag(&self) -> f32 {
         (self.y * self.y + self.x * self.x).sqrt()
     }
 }
 
-impl Add for Vector {
-    type Output = Vector;
+impl Add for Vec2 {
+    type Output = Vec2;
 
     fn add(self, rhs: Self) -> Self::Output {
         Self {
@@ -281,8 +341,8 @@ impl Add for Vector {
     }
 }
 
-impl Div for Vector {
-    type Output = Vector;
+impl Div for Vec2 {
+    type Output = Vec2;
 
     fn div(self, rhs: Self) -> Self::Output {
         Self {
@@ -292,8 +352,8 @@ impl Div for Vector {
     }
 }
 
-impl Add<f32> for Vector {
-    type Output = Vector;
+impl Add<f32> for Vec2 {
+    type Output = Vec2;
 
     fn add(self, rhs: f32) -> Self::Output {
         Self {
@@ -303,7 +363,7 @@ impl Add<f32> for Vector {
     }
 }
 
-impl<F: Into<f32>> Mul<F> for Vector {
+impl<F: Into<f32>> Mul<F> for Vec2 {
     type Output = Self;
 
     fn mul(self, rhs: F) -> Self::Output {
@@ -315,7 +375,7 @@ impl<F: Into<f32>> Mul<F> for Vector {
     }
 }
 
-impl<F: Into<f32>> Div<F> for Vector {
+impl<F: Into<f32>> Div<F> for Vec2 {
     type Output = Self;
 
     fn div(self, rhs: F) -> Self::Output {
@@ -327,8 +387,8 @@ impl<F: Into<f32>> Div<F> for Vector {
     }
 }
 
-impl Sub for Vector {
-    type Output = Vector;
+impl Sub for Vec2 {
+    type Output = Vec2;
 
     fn sub(self, rhs: Self) -> Self::Output {
         Self {
@@ -339,7 +399,7 @@ impl Sub for Vector {
 }
 
 // I think this means that there won't be a copy
-impl From<Point> for Vector {
+impl From<Point> for Vec2 {
     fn from(value: Point) -> Self {
         Self {
             x: value.x,
@@ -376,10 +436,10 @@ impl Div<f32> for Segment {
     }
 }
 
-impl Div<Vector> for Segment {
+impl Div<Vec2> for Segment {
     type Output = Self;
 
-    fn div(self, rhs: Vector) -> Self::Output {
+    fn div(self, rhs: Vec2) -> Self::Output {
         match self {
             Segment::LINE(line) => Self::LINE(line / rhs),
             Segment::BEZ2(bez2) => Self::BEZ2(bez2 / rhs),
@@ -400,10 +460,10 @@ impl Add<f32> for Segment {
     }
 }
 
-impl Add<Vector> for Segment {
+impl Add<Vec2> for Segment {
     type Output = Self;
 
-    fn add(self, rhs: Vector) -> Self::Output {
+    fn add(self, rhs: Vec2) -> Self::Output {
         match self {
             Self::LINE(line) => Self::LINE(Line(line.0 + rhs, line.1 + rhs)),
             Self::BEZ2(bez2) => Self::BEZ2(Bez2(bez2.0 + rhs, bez2.1 + rhs, bez2.2 + rhs)),
@@ -447,7 +507,7 @@ impl From<OutlineCurve> for Segment {
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, bytemuck::Pod, bytemuck::Zeroable)]
-pub struct Line(pub Vector, pub Vector);
+pub struct Line(pub Vec2, pub Vec2);
 
 impl Line {
     fn to_f32_arr(self) -> [f32; 4] {
@@ -467,10 +527,10 @@ impl Div<f32> for Line {
     }
 }
 
-impl Div<Vector> for Line {
+impl Div<Vec2> for Line {
     type Output = Self;
 
-    fn div(self, rhs: Vector) -> Self::Output {
+    fn div(self, rhs: Vec2) -> Self::Output {
         Self(self.0 / rhs, self.1 / rhs)
     }
 }
@@ -485,13 +545,13 @@ impl Add<f32> for Line {
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, bytemuck::Pod, bytemuck::Zeroable)]
-pub struct Bez2(Vector, Vector, Vector);
+pub struct Bez2(Vec2, Vec2, Vec2);
 impl Bez2 {
     fn to_f32_arr(&self) -> [f32; 6] {
         [self.0.x, self.0.y, self.1.x, self.1.y, self.2.x, self.2.y]
     }
 
-    fn eval(&self, t: f32) -> Vector {
+    fn eval(&self, t: f32) -> Vec2 {
         self.0 * (1. - t) * (1. - t) + self.1 * t * (1. - t) + self.2 * t * t
     }
 
@@ -509,10 +569,10 @@ impl Div<f32> for Bez2 {
     }
 }
 
-impl Div<Vector> for Bez2 {
+impl Div<Vec2> for Bez2 {
     type Output = Self;
 
-    fn div(self, rhs: Vector) -> Self::Output {
+    fn div(self, rhs: Vec2) -> Self::Output {
         Self(self.0 / rhs, self.1 / rhs, self.2 / rhs)
     }
 }
@@ -527,7 +587,7 @@ impl Add<f32> for Bez2 {
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, bytemuck::Pod, bytemuck::Zeroable)]
-pub struct Bez3(Vector, Vector, Vector, Vector);
+pub struct Bez3(Vec2, Vec2, Vec2, Vec2);
 impl Bez3 {
     fn to_f32_arr(&self) -> [f32; 8] {
         [
@@ -535,7 +595,7 @@ impl Bez3 {
         ]
     }
 
-    fn eval(&self, t: f32) -> Vector {
+    fn eval(&self, t: f32) -> Vec2 {
         self.0 * (1. - t) * (1. - t) * (1. - t)
             + self.1 * t * (1. - t) * (1. - t)
             + self.2 * t * t * (1. - t)
@@ -556,10 +616,10 @@ impl Div<f32> for Bez3 {
     }
 }
 
-impl Div<Vector> for Bez3 {
+impl Div<Vec2> for Bez3 {
     type Output = Self;
 
-    fn div(self, rhs: Vector) -> Self::Output {
+    fn div(self, rhs: Vec2) -> Self::Output {
         Self(self.0 / rhs, self.1 / rhs, self.2 / rhs, self.3 / rhs)
     }
 }
@@ -575,25 +635,44 @@ impl Add<f32> for Bez3 {
 #[derive(Debug, Clone)]
 pub struct Shape {
     segments: Vec<Segment>,
-    aspect_ratio: f32,
+    dimensions: Vec2,
+    offset: Vec2,
 }
 
-impl From<Outline> for Shape {
-    /// Assumes that the Segments are in order
-    fn from(value: Outline) -> Self {
-        let scaling_vector = Vector {
-            x: value.bounds.width(),
-            y: value.bounds.height(),
+impl Shape {
+    fn from_glyph(font_arc: FontArc, glyph_id: GlyphId) -> Option<Self> {
+        let units_per_em = font_arc.units_per_em().unwrap_or(16384.0);
+
+        let outline = match font_arc.outline(glyph_id) {
+            Some(x) => x,
+            None => return None,
         };
-        let offset_vector = Vector::from(value.bounds.min) * -1.;
-        let padding_scale = Vector {
+
+        let bounds = outline.bounds;
+
+        let scaling_vector = Vec2 {
+            x: bounds.width(),
+            y: bounds.height(),
+        };
+
+        let offset_vector = Vec2::from(outline.bounds.min) * -1.;
+
+        let padding_scale = Vec2 {
             x: 1. / 0.8,
             y: 1. / 0.8,
         };
-        let padding_offset = Vector { x: 0.1, y: 0.1 };
-        Self {
-            aspect_ratio: value.bounds.width() / value.bounds.height(),
-            segments: value
+        let padding_offset = Vec2 { x: 0.1, y: 0.1 };
+
+        Some(Self {
+            dimensions: Vec2 {
+                x: scaling_vector.x / units_per_em,
+                y: scaling_vector.y / units_per_em,
+            },
+            offset: Vec2 {
+                x: bounds.min.x / units_per_em,
+                y: bounds.min.y / units_per_em,
+            },
+            segments: outline
                 .curves
                 .into_iter()
                 .map(|outline_curve| Segment::from(outline_curve))
@@ -601,6 +680,6 @@ impl From<Outline> for Shape {
                 .map(|segment| (segment + offset_vector) / scaling_vector)
                 .map(|segment| (segment / padding_scale) + padding_offset)
                 .collect(),
-        }
+        })
     }
 }

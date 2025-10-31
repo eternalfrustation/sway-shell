@@ -36,7 +36,7 @@ use smithay_client_toolkit::{
     },
 };
 
-use crate::{font::Vector, state::Message};
+use crate::{font::Vec2, state::Message};
 
 pub enum DisplayMessage {
     Configure { width: u32, height: u32 },
@@ -396,7 +396,7 @@ impl PointerHandler for Display {
                     log::info!("Press {:x} @ {:?}", button, event.position);
                     block_in_place(|| {
                         self.state_sender.blocking_send(Message::PointerPress {
-                            pos: Vector {
+                            pos: Vec2 {
                                 x: event.position.0 as f32,
                                 y: event.position.1 as f32,
                             },
@@ -408,7 +408,7 @@ impl PointerHandler for Display {
                     log::info!("Release {:x} @ {:?}", button, event.position);
                     block_in_place(|| {
                         self.state_sender.blocking_send(Message::PointerRelease {
-                            pos: Vector {
+                            pos: Vec2 {
                                 x: event.position.0 as f32,
                                 y: event.position.1 as f32,
                             },

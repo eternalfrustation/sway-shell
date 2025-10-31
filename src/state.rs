@@ -3,9 +3,11 @@ use tokio::sync::mpsc::Sender;
 use tokio_stream::StreamExt;
 
 use crate::{
-    font::{Line, Segment, Vector},
+    audio::{AudioMessage, AudioState},
+    font::{Line, Segment, Vec2},
     mpd::MpdMessage,
     network::{Network, NetworkMessage},
+    renderer::{RenderState, Renderable},
     sway::{SwayMessage, Workspace},
 };
 
@@ -14,9 +16,10 @@ pub struct State {
     pub workspaces: Vec<Workspace>,
     pub mpd_status: Option<Status>,
     pub mpd_current_song: Option<mpd::Song>,
-    pub press_position: Vector,
+    pub press_position: Vec2,
     pub segments: Vec<Segment>,
     pub networks: Vec<Network>,
+    pub audio_state: AudioState,
 }
 
 #[derive(Debug)]
@@ -24,8 +27,9 @@ pub enum Message {
     Sway(SwayMessage),
     Mpd(MpdMessage),
     Network(NetworkMessage),
-    PointerPress { pos: Vector },
-    PointerRelease { pos: Vector },
+    Audio(AudioMessage),
+    PointerPress { pos: Vec2 },
+    PointerRelease { pos: Vec2 },
 }
 
 impl State {
@@ -34,25 +38,90 @@ impl State {
             workspaces: Vec::new(),
             mpd_status: None,
             mpd_current_song: None,
-            press_position: Vector { x: 0., y: 0. },
+            press_position: Vec2 { x: 0., y: 0. },
             segments: vec![],
             networks: vec![],
+            audio_state: AudioState::default(),
+        }
+    }
+
+    pub fn to_renderable_state(&self) -> RenderState {
+        let mut left = Vec::new();
+        for workspace in self.workspaces.iter() {
+            if let Some(name) = &workspace.name {
+                left.push(Renderable::Text {
+                    text: name.to_string(),
+                    fg: 0xffFFffFF,
+                    bg: 0,
+                })
+            } else {
+                left.push(Renderable::Text {
+                    text: workspace.num.to_string(),
+                    fg: 0xffFFffFF,
+                    bg: 0,
+                });
+            }
+        }
+        left.push(Renderable::Space(1.));
+        if let Some(mpd_status) = &self.mpd_status {
+            if let Some((elapsed, total)) = mpd_status.time {
+                let completed = elapsed.as_secs_f32() / total.as_secs_f32();
+                left.push(Renderable::Box {
+                    fg: 0xff00ffff,
+                    bg: 0xff00ffff,
+                    width: 10.,
+                    height: 10.,
+                    skip: 0.,
+                });
+                left.push(if mpd_status.state == mpd::status::State::Play {
+                    Renderable::Box {
+                        fg: 0xffff00ff,
+                        bg: 0xffff00ff,
+                        width: 10. * completed,
+                        height: 10.,
+                        skip: 10.,
+                    }
+                } else {
+                    Renderable::Box {
+                        fg: 0xffffffff,
+                        bg: 0xffffffff,
+                        width: 10. * completed,
+                        height: 10.,
+                        skip: 10.,
+                    }
+                });
+            }
+        }
+        left.push(Renderable::Space(1.));
+        if let Some(song) = &self.mpd_current_song {
+            if let Some(name) = &song.title {
+                left.push(Renderable::Text {
+                    text: name.clone(),
+                    fg: 0xffffffff,
+                    bg: 0x00000000,
+                })
+            }
+        }
+        RenderState {
+            left,
+            right: Vec::new(),
+            center: Vec::new(),
         }
     }
 
     pub async fn run_event_loop<S: StreamExt<Item = Message> + std::marker::Unpin>(
         mut self,
         mut message_receiver: S,
-        render_sender: Sender<Self>,
+        render_sender: Sender<RenderState>,
     ) {
         render_sender
-            .send(self.clone())
+            .send(self.to_renderable_state())
             .await
             .expect("To be able to send render requests without drama, when initializing");
         while let Some(message) = message_receiver.next().await {
             self.update(message);
             render_sender
-                .send(self.clone())
+                .send(self.to_renderable_state())
                 .await
                 .expect("To be able to send render requests without drama");
         }
@@ -109,10 +178,8 @@ impl State {
                 MpdMessage::MpdPlayerUpdate { status } => {
                     self.mpd_status = Some(status);
                 }
-                MpdMessage::MpdTimeElapsed { elapsed } => {
-                    if let Some(ref mut mpd_stats) = self.mpd_status {
-                        mpd_stats.elapsed = Some(elapsed);
-                    }
+                MpdMessage::MpdTimeElapsed { status } => {
+                    self.mpd_status = Some(status);
                 }
                 MpdMessage::MpdSongUpdate { song } => {
                     self.mpd_current_song = song;
@@ -124,6 +191,10 @@ impl State {
                     .push(Segment::LINE(Line(self.press_position, pos)));
             }
             Message::Network(network_message) => self.networks = network_message,
+            Message::Audio(audio_message) => match audio_message {
+                AudioMessage::SinkVolume(items) => self.audio_state.sink_volume = items,
+                AudioMessage::SourceVolume(items) => self.audio_state.source_volume = items,
+            },
         }
     }
 }

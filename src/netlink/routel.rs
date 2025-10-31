@@ -458,7 +458,7 @@ impl NetlinkRetrievable<RoutelinkStatsError> for LinkInfo {
                         );
                     }
                     Stats => {
-                        println!("{:?}", attr.rta_payload().len());
+                        //println!("{:?}", attr.rta_payload().len());
                         link_builder.stats(
                             attr.get_payload_as()
                                 .expect("Stats to be a valid LinkStats struct"),

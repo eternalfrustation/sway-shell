@@ -9,6 +9,7 @@ pub mod state;
 pub mod sway;
 pub mod network;
 pub mod netlink;
+pub mod audio;
 
 use layer::Display;
 use mpd::mpd_subscription;
@@ -22,7 +23,7 @@ use tokio_stream::{StreamExt, StreamMap};
 use state::State;
 use sway::sway_subscription;
 
-use crate::network::network_subscription;
+use crate::{audio::audio_subscription, network::network_subscription};
 
 fn main() {
     pretty_env_logger::init();
@@ -37,6 +38,7 @@ fn main() {
     streams.insert("sway", sway_subscription(rt.handle().clone()));
     streams.insert("mpd", mpd_subscription(rt.handle().clone()));
     streams.insert("network", network_subscription(rt.handle().clone()));
+    streams.insert("audio", audio_subscription(rt.handle().clone()));
     streams.insert("display", state_stream);
     let (display_sender, display_receiver) = channel(1);
     // Currently using the merge method, ideally would use a StreamMap
