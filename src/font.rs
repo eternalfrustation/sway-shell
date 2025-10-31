@@ -3,7 +3,7 @@ use std::{
     ops::{Add, Div, Mul, Sub},
 };
 
-use ab_glyph::{Font, FontArc, FontRef, GlyphId, OutlineCurve, Point};
+use ab_glyph::{Font, FontArc, GlyphId, OutlineCurve, Point};
 
 pub const FONT_DATA: &[u8] = include_bytes!("test_font.ttf");
 

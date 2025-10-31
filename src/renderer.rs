@@ -3,7 +3,7 @@ use std::mem;
 
 use std::{borrow::Cow, ptr::NonNull, sync::Arc};
 
-use ab_glyph::{Font, GlyphId};
+use ab_glyph::Font;
 use bytemuck::Zeroable;
 use raw_window_handle::{
     RawDisplayHandle, RawWindowHandle, WaylandDisplayHandle, WaylandWindowHandle,
@@ -17,7 +17,7 @@ use wgpu::{AddressMode, DeviceDescriptor, FilterMode, SamplerDescriptor};
 use wgpu::{Buffer, BufferDescriptor, IndexFormat, PresentMode, RenderPipeline, util::DeviceExt};
 
 use crate::font::{FontContainer, GlyphOffLen};
-use crate::{layer::DisplayMessage, state::State};
+use crate::layer::DisplayMessage;
 
 #[repr(C)]
 #[derive(Copy, Clone, Debug, bytemuck::Pod, bytemuck::Zeroable)]
@@ -483,11 +483,11 @@ impl Renderer {
         let mut skip = 0.0;
         let mut instances = Vec::new();
 
+        let units_per_em = self.font_sdf.font_arc.units_per_em().unwrap_or(16384.0);
+
         for item in state.left.iter() {
             match item {
                 Renderable::Text { text, fg, bg } => {
-
-                    
                     let id = match text.chars().map(|c| self.font_sdf.font_arc.glyph_id(c)).next() {
                         Some(id) => id,
                         None => continue,
@@ -495,11 +495,13 @@ impl Renderer {
 
                         let glyph_info = match self.font_sdf.load_char_with_id(id) {
                             Some(x) => {
-                                self.update_font();
                                 x
                             }
-                            None => continue,
-                        };
+                        None => {
+                            skip += self.font_sdf.font_arc.h_advance_unscaled(id) / units_per_em;
+                            continue;
+                        },
+                    };
                         instances.push(Instance {
                             position: [skip + glyph_info.offset.x, -0.5 + glyph_info.offset.y],
                             scale: [glyph_info.dimensions.x, -glyph_info.dimensions.y],
@@ -517,12 +519,17 @@ impl Renderer {
                             .into_iter()
                             .tuple_windows()
                     {
+
+                        skip -= self.font_sdf.font_arc.kern_unscaled(prev_id, id);
                         let glyph_info = match self.font_sdf.load_char_with_id(id) {
                             Some(x) => {
                                 self.update_font();
                                 x
                             }
-                            None => continue,
+                        None => {
+                            skip += self.font_sdf.font_arc.h_advance_unscaled(id) / units_per_em;
+                            continue;
+                        },
                         };
                         instances.push(Instance {
                             position: [skip + glyph_info.offset.x, -0.5 + glyph_info.offset.y],
@@ -533,8 +540,7 @@ impl Renderer {
                             quadratic_off: glyph_info.bez2_off,
                             cubic_off: glyph_info.bez3_off,
                         });
-                        skip += self.font_sdf.font_arc.kern_unscaled(prev_id, id)
-                            + glyph_info.advance;
+                        skip += glyph_info.advance;
                     }
                 }
                 Renderable::Space(space) => {
@@ -566,6 +572,8 @@ impl Renderer {
             0,
             bytemuck::cast_slice(instances.as_slice()),
         );
+
+        self.update_font();
 
         let mut encoder = device.create_command_encoder(&Default::default());
         {

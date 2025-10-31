@@ -51,8 +51,12 @@ impl State {
             if let Some(name) = &workspace.name {
                 left.push(Renderable::Text {
                     text: name.to_string(),
-                    fg: 0xffFFffFF,
-                    bg: 0,
+                    fg: if workspace.visible {
+                        0xffFFffFF
+                    } else {
+                        0xff111111
+                    },
+                    bg: if workspace.visible { 0xff111111 } else { 0xff000000},
                 })
             } else {
                 left.push(Renderable::Text {
@@ -61,6 +65,7 @@ impl State {
                     bg: 0,
                 });
             }
+            left.push(Renderable::Space(1.))
         }
         left.push(Renderable::Space(1.));
         if let Some(mpd_status) = &self.mpd_status {
