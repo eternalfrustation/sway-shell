@@ -30,6 +30,8 @@ pub struct FontContainer {
     pub font_arc: FontArc,
 
     pub char_map: HashMap<GlyphId, char>,
+
+    pub units_per_em: f32,
 }
 
 #[repr(C)]
@@ -146,6 +148,7 @@ impl FontContainer {
                 dbg!(locations[&'1']);
         */
         Self {
+            units_per_em,
             char_map,
             linear_points_buffer: line_points
                 .clone()
@@ -178,7 +181,7 @@ impl FontContainer {
     }
 
     pub fn load_char(&mut self, c: char) -> Option<GlyphInfo> {
-        let units_per_em = self.font_arc.units_per_em().unwrap_or(16384.0);
+        let units_per_em = self.units_per_em;
         if let Some(x) = self.locations.get(&c) {
             return Some(*x);
         }

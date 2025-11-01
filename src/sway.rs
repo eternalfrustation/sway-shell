@@ -34,6 +34,7 @@ pub enum SwayMessage {
         id: i64,
         urgent: bool,
     },
+    WindowFocusedChange {window_name: Option<String>}
 }
 
 #[derive(Clone, Debug)]
@@ -132,13 +133,23 @@ fn sway_generator(output: Sender<Message>) -> Result<(), SwayError> {
         output.blocking_send(Message::Sway(SwayMessage::WorkspaceAdd(workspace)))?;
     }
 
-    for event in conn.subscribe([EventType::Workspace])? {
+
+    for event in conn.subscribe([EventType::Workspace, EventType::Window])? {
         match event {
             Err(e) => {
                 log::error!("{e:?}");
             }
             Ok(event) => {
                 match event {
+                    Event::Window(window_event) => {
+                        match window_event.change {
+                            swayipc::WindowChange::Focus => {
+                                output.blocking_send(Message::Sway(SwayMessage::WindowFocusedChange { window_name: window_event.container.name  }))?
+                            },
+                            _ => {log::info!("Unknown Window Change");},
+                        }
+                    },
+
                     Event::Workspace(workspace_event) => match workspace_event.change {
                         WorkspaceChange::Init => {
                             output.blocking_send(Message::Sway(SwayMessage::WorkspaceAdd(

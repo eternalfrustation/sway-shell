@@ -148,6 +148,7 @@ pub struct Renderer {
     pub font_sdf: FontContainer,
 }
 
+#[derive(Debug)]
 pub enum Renderable {
     Text {
         text: String,
@@ -460,76 +461,60 @@ impl Renderer {
         );
     }
 
-    fn draw_frame(&mut self, state: &RenderState) {
-        let surface = &self.surface;
-        let device = &self.device;
-        let queue = &self.queue;
-
-        // Wait for GPU to do stuff, so that get_current_texture doesn't timeout
-        surface.configure(
-            device,
-            &surface
-                .get_default_config(&self.adapter, self.width, self.height)
-                .expect("To be able to get default config for the surface"),
-        );
-
-        let surface_texture = surface
-            .get_current_texture()
-            .expect("failed to acquire next swapchain texture");
-        let texture_view = surface_texture
-            .texture
-            .create_view(&wgpu::TextureViewDescriptor::default());
-
-        let mut skip = 0.0;
+    fn to_renderable(
+        &mut self,
+        renderables: &Vec<Renderable>,
+        initial_skip: f32,
+    ) -> (Vec<Instance>, f32) {
         let mut instances = Vec::new();
-
-        let units_per_em = self.font_sdf.font_arc.units_per_em().unwrap_or(16384.0);
-
-        for item in state.left.iter() {
+        let mut skip = initial_skip;
+        for item in renderables.into_iter() {
             match item {
                 Renderable::Text { text, fg, bg } => {
-                    let id = match text.chars().map(|c| self.font_sdf.font_arc.glyph_id(c)).next() {
+                    let id = match text
+                        .chars()
+                        .map(|c| self.font_sdf.font_arc.glyph_id(c))
+                        .next()
+                    {
                         Some(id) => id,
                         None => continue,
                     };
 
-                        let glyph_info = match self.font_sdf.load_char_with_id(id) {
-                            Some(x) => {
-                                x
-                            }
+                    let glyph_info = match self.font_sdf.load_char_with_id(id) {
+                        Some(x) => x,
                         None => {
-                            skip += self.font_sdf.font_arc.h_advance_unscaled(id) / units_per_em;
+                            skip += self.font_sdf.font_arc.h_advance_unscaled(id)
+                                / self.font_sdf.units_per_em;
                             continue;
-                        },
+                        }
                     };
-                        instances.push(Instance {
-                            position: [skip + glyph_info.offset.x, -0.5 + glyph_info.offset.y],
-                            scale: [glyph_info.dimensions.x, -glyph_info.dimensions.y],
-                            fg: *fg,
-                            bg: *bg,
-                            lines_off: glyph_info.line_off,
-                            quadratic_off: glyph_info.bez2_off,
-                            cubic_off: glyph_info.bez3_off,
-                        });
-                    skip += 
-                    glyph_info.advance;
+                    instances.push(Instance {
+                        position: [skip + glyph_info.offset.x, -0.5 + glyph_info.offset.y],
+                        scale: [glyph_info.dimensions.x, -glyph_info.dimensions.y],
+                        fg: *fg,
+                        bg: *bg,
+                        lines_off: glyph_info.line_off,
+                        quadratic_off: glyph_info.bez2_off,
+                        cubic_off: glyph_info.bez3_off,
+                    });
+                    skip += glyph_info.advance;
 
                     for (prev_id, id) in
                         Vec::from_iter(text.chars().map(|c| self.font_sdf.font_arc.glyph_id(c)))
                             .into_iter()
                             .tuple_windows()
                     {
-
                         skip -= self.font_sdf.font_arc.kern_unscaled(prev_id, id);
                         let glyph_info = match self.font_sdf.load_char_with_id(id) {
                             Some(x) => {
                                 self.update_font();
                                 x
                             }
-                        None => {
-                            skip += self.font_sdf.font_arc.h_advance_unscaled(id) / units_per_em;
-                            continue;
-                        },
+                            None => {
+                                skip += self.font_sdf.font_arc.h_advance_unscaled(id)
+                                    / self.font_sdf.units_per_em;
+                                continue;
+                            }
                         };
                         instances.push(Instance {
                             position: [skip + glyph_info.offset.x, -0.5 + glyph_info.offset.y],
@@ -566,6 +551,60 @@ impl Renderer {
                 }
             }
         }
+        (instances, skip)
+    }
+
+    fn draw_frame(&mut self, state: &RenderState) {
+        let surface = &self.surface;
+        let device = &self.device.clone();
+        let queue = &self.queue.clone();
+
+        // Wait for GPU to do stuff, so that get_current_texture doesn't timeout
+        surface.configure(
+            device,
+            &surface
+                .get_default_config(&self.adapter, self.width, self.height)
+                .expect("To be able to get default config for the surface"),
+        );
+
+        let surface_texture = surface
+            .get_current_texture()
+            .expect("failed to acquire next swapchain texture");
+        let texture_view = surface_texture
+            .texture
+            .create_view(&wgpu::TextureViewDescriptor::default());
+
+        let (mut instances, left_skip) = self.to_renderable(&state.left, 0.0);
+
+        let (center_instances, center_skip) = self.to_renderable(&state.center, left_skip);
+
+        let width = center_skip - left_skip;
+        let bar_width = self.width as f32 / self.height as f32;
+        for instance in center_instances.into_iter() {
+            instances.push(Instance {
+                position: [
+                    instance.position[0] - left_skip + bar_width / 2. - width / 2.,
+                    instance.position[1],
+                ],
+                ..instance
+            });
+        }
+
+        let (right_instances, right_skip) = self.to_renderable(&state.right, center_skip);
+
+        let width = right_skip - center_skip;
+
+
+        for instance in right_instances.into_iter() {
+            instances.push(Instance {
+                position: [
+                    instance.position[0] - center_skip + bar_width - width,
+                    instance.position[1],
+                ],
+                ..instance
+            });
+        }
+
 
         queue.write_buffer(
             &self.instance_buffer,

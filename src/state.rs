@@ -1,3 +1,5 @@
+use core::f32;
+
 use mpd::Status;
 use tokio::sync::mpsc::Sender;
 use tokio_stream::StreamExt;
@@ -20,6 +22,7 @@ pub struct State {
     pub segments: Vec<Segment>,
     pub networks: Vec<Network>,
     pub audio_state: AudioState,
+    pub focused_window_name: Option<String>,
 }
 
 #[derive(Debug)]
@@ -35,6 +38,7 @@ pub enum Message {
 impl State {
     pub fn new() -> Self {
         Self {
+            focused_window_name: None,
             workspaces: Vec::new(),
             mpd_status: None,
             mpd_current_song: None,
@@ -56,7 +60,11 @@ impl State {
                     } else {
                         0xff111111
                     },
-                    bg: if workspace.visible { 0xff111111 } else { 0xff000000},
+                    bg: if workspace.visible {
+                        0xff111111
+                    } else {
+                        0xff000000
+                    },
                 })
             } else {
                 left.push(Renderable::Text {
@@ -97,20 +105,87 @@ impl State {
                 });
             }
         }
+
         left.push(Renderable::Space(1.));
+
         if let Some(song) = &self.mpd_current_song {
             if let Some(name) = &song.title {
+                let mut trunc_name = name.clone();
+                trunc_name.truncate(trunc_name.floor_char_boundary(30));
+                if name.len() > 30 {
+                    trunc_name = trunc_name + "...";
+                }
                 left.push(Renderable::Text {
-                    text: name.clone(),
+                    text: trunc_name,
                     fg: 0xffffffff,
                     bg: 0x00000000,
                 })
             }
         }
+
+        let mut center = Vec::new();
+        if let Some(window_name) = &self.focused_window_name {
+            let mut trunc_name = window_name.clone();
+            trunc_name.truncate(trunc_name.floor_char_boundary(30));
+            if window_name.len() > 30 {
+                trunc_name = trunc_name + "...";
+            }
+            center.push(Renderable::Text {
+                text: trunc_name,
+                fg: 0xffffffff,
+                bg: 0x00000000,
+            })
+        }
+
+        let mut right = Vec::new();
+
+        for network in self.networks.iter() {
+            match network {
+                Network::Wifi {
+                    if_index,
+                    if_name,
+                    ssid,
+                    up,
+                    down,
+                    up_rate,
+                    down_rate,
+                } => {
+                    right.push(Renderable::Text {
+                        text: format!(
+                            "{} {}↓ {}↑",
+                            if let Some(ssid) = ssid { ssid } else { "" }.to_string(),
+                            display_bytes(*up_rate) + "/s",
+                            display_bytes(*down_rate) + "/s",
+                        ),
+                        fg: 0xffffffff,
+                        bg: 0x00000000,
+                    });
+                }
+                Network::Network {
+                    if_index,
+                    name,
+                    up,
+                    down,
+                    up_rate,
+                    down_rate,
+                } => {
+                    if name == "lo" {
+                        continue;
+                    }
+                    right.push(Renderable::Text {
+                        text: name.clone(),
+                        fg: 0xffffffff,
+                        bg: 0x00000000,
+                    });
+                }
+            }
+            right.push(Renderable::Space(1.0))
+        }
+
         RenderState {
             left,
-            right: Vec::new(),
-            center: Vec::new(),
+            right,
+            center,
         }
     }
 
@@ -178,6 +253,9 @@ impl State {
                         workspace.visible = visible;
                     }
                 }
+                SwayMessage::WindowFocusedChange { window_name } => {
+                    self.focused_window_name = window_name
+                }
             },
             Message::Mpd(mpd_message) => match mpd_message {
                 MpdMessage::MpdPlayerUpdate { status } => {
@@ -202,4 +280,27 @@ impl State {
             },
         }
     }
+}
+
+const UNITS: [(&str, u64); 5] = [
+    ("B", 1),
+    ("KiB", 1024),
+    ("MiB", 1024),
+    ("GiB", 1024),
+    ("TiB", 1024),
+];
+
+fn display_bytes(x: u64) -> String {
+    let mut scaled_size = x;
+    let mut current_unit_idx = 0;
+    while scaled_size
+    > (UNITS
+        .get(current_unit_idx + 1)
+        .map(|unit| unit.1)
+        .unwrap_or(u64::MAX))
+    {
+        current_unit_idx += 1;
+        scaled_size /= UNITS[current_unit_idx].1
+    }
+    format!("{scaled_size:5} {}", UNITS[current_unit_idx].0)
 }

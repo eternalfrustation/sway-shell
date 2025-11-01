@@ -45,7 +45,7 @@ fn main() {
     let state_event_loop_handle =
         rt.spawn(state.run_event_loop(streams.map(|(_, v)| v), render_sender));
     // IDK how else to do this
-    const HEIGHT: u32 = 16;
+    const HEIGHT: u32 = 15;
     let (display, event_queue) = rt.block_on(Display::new(HEIGHT, display_sender, state_sender));
     let wayland_conn = display.wayland_conn.clone();
     let wayland_surface = display.wayland_surface.clone();
