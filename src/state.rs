@@ -1,4 +1,3 @@
-
 use mpd::Status;
 use tokio::sync::mpsc::Sender;
 use tokio_stream::StreamExt;
@@ -184,6 +183,14 @@ impl State {
                 }
             }
             right.push(Renderable::Space(1.0))
+        }
+
+        for sink_volume in self.audio_state.sink_volume.iter() {
+            right.push(Renderable::Text {
+                text: format!("{}%", sink_volume.cbrt() * 100.0),
+                fg: 0xffffffff,
+                bg: 0x00000000,
+            })
         }
 
         RenderState {

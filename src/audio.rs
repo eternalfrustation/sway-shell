@@ -44,8 +44,8 @@ pub enum AudioMessage {
 }
 
 struct Proxies {
-    proxies_t: HashMap<u32, Box<dyn ProxyT>>,
-    listeners: HashMap<u32, Vec<Box<dyn Listener>>>,
+    proxies_t: HashMap<u32, Rc<dyn ProxyT>>,
+    listeners: HashMap<u32, Vec<Rc<dyn Listener>>>,
 }
 
 impl Proxies {
@@ -56,7 +56,7 @@ impl Proxies {
         }
     }
 
-    fn add_proxy_t(&mut self, proxy_t: Box<dyn ProxyT>, listener: Box<dyn Listener>) {
+    fn add_proxy_t(&mut self, proxy_t: Rc<dyn ProxyT>, listener: Rc<dyn Listener>) {
         let proxy_id = {
             let proxy = proxy_t.upcast_ref();
             proxy.id()
@@ -70,7 +70,7 @@ impl Proxies {
 
     fn add_proxy_listener(&mut self, proxy_id: u32, listener: ProxyListener) {
         let v = self.listeners.entry(proxy_id).or_default();
-        v.push(Box::new(listener));
+        v.push(Rc::new(listener));
     }
 
     fn remove(&mut self, proxy_id: u32) {
@@ -86,32 +86,56 @@ fn audio_generator(output: Sender<Message>, _rt: Handle) -> Result<(), AudioErro
     let core = context.connect_rc(None)?;
     let mainloop_weak = mainloop.downgrade();
 
-    let _listener = core
-        .add_listener_local()
-        .done(|_id, _seq| {})
-        .error(move |id, seq, res, message| {
-            log::error!("id: {id}, seq: {seq}, res: {res}, message: {message}");
-            if id == 0 {
-                if let Some(mainloop) = mainloop_weak.upgrade() {
-                    mainloop.quit();
+    let _listener =
+        core.add_listener_local()
+            .done(|_id, _seq| {})
+            .error(move |id, seq, res, message| {
+                log::error!("id: {id}, seq: {seq}, res: {res}, message: {message}");
+                if id == 0 {
+                    if let Some(mainloop) = mainloop_weak.upgrade() {
+                        mainloop.quit();
+                    }
                 }
-            }
-        });
+            });
     let registry = core.get_registry_rc()?;
     let registry_weak = registry.downgrade();
     let proxies = Rc::new(RefCell::new(Proxies::new()));
     let default_sink = Rc::new(RefCell::new(None));
+    let default_sink_id = Rc::new(RefCell::new(None));
     let _listener = registry
         .add_listener_local()
         .global(move |global| {
             if let Some(registry) = registry_weak.upgrade() {
                 use pipewire::types::ObjectType;
-                let p: Option<(Box<dyn ProxyT>, Box<dyn Listener>)> = match global.type_ {
+                let p: Option<(Rc<dyn ProxyT>, Rc<dyn Listener>)> = match global.type_ {
                     ObjectType::Node => {
                         let node: Node = registry.bind(global).unwrap();
                         let output = output.clone();
-                        let obj_listener = node
+                        let default_sink_id = default_sink_id.clone();
+                        let default_sink = default_sink.clone();
+                        let original_node = Rc::new(node);
+                        let node = original_node.clone();
+
+                        let obj_listener = original_node
+                            .clone()
                             .add_listener_local()
+                            .info(move |node_info| {
+                                let props = if let Some(props) = node_info.props() {
+                                    props
+                                } else {
+                                    return;
+                                };
+                                let name = if let Some(name) = props.get("node.name") {
+                                    name
+                                } else {
+                                    return;
+                                };
+                                if Some(String::from(name)) == *default_sink.borrow() {
+                                    node.subscribe_params(&[ParamType::Props]);
+                                    default_sink_id
+                                        .replace(props.get("object.id").map(String::from).clone());
+                                }
+                            })
                             .param(move |_seq, param_type, _index, _next, param| {
                                 match param_type {
                                     ParamType::Props => {}
@@ -158,9 +182,7 @@ fn audio_generator(output: Sender<Message>, _rt: Handle) -> Result<(), AudioErro
                                 };
                             })
                             .register();
-                        node.subscribe_params(&[ParamType::Props]);
-                        node.enum_params(0, None, 0, u32::MAX);
-                        Some((Box::new(node), Box::new(obj_listener)))
+                        Some((original_node, Rc::new(obj_listener)))
                     }
                     ObjectType::Metadata => {
                         let metadata: Metadata = registry.bind(global).unwrap();
@@ -179,11 +201,9 @@ fn audio_generator(output: Sender<Message>, _rt: Handle) -> Result<(), AudioErro
                                 0
                             })
                             .register();
-                        Some((Box::new(metadata), Box::new(metadata_listener)))
+                        Some((Rc::new(metadata), Rc::new(metadata_listener)))
                     }
-                    _ => {
-                        None
-                    }
+                    _ => None,
                 };
 
                 if let Some((proxy_spe, listener_spe)) = p {
