@@ -7,12 +7,9 @@ use libspa::utils::Id;
 use pipewire;
 
 use pipewire::context::ContextRc;
-use pipewire::device::Device;
-use pipewire::link::Link;
 use pipewire::main_loop::MainLoopRc;
 use pipewire::metadata::Metadata;
 use pipewire::node::Node;
-use pipewire::port::Port;
 use pipewire::proxy::{Listener, ProxyT};
 use pipewire::spa::param::ParamType;
 
@@ -170,7 +167,7 @@ fn audio_generator(output: Sender<Message>, _rt: Handle) -> Result<(), AudioErro
                         let default_sink = default_sink.clone();
                         let metadata_listener = metadata
                             .add_listener_local()
-                            .property(move |seq, key, metadata_type, value| {
+                            .property(move |_seq, key, _metadata_type, value| {
                                 if let Some(("default.audio.sink", value)) = key.zip(value.clone())
                                 {
                                     let value = value.split_terminator("\"").nth(3);
