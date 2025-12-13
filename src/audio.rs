@@ -1,24 +1,25 @@
-use std::collections::{HashMap, HashSet};
+use std::cell::RefCell;
+use std::collections::HashMap;
 use std::rc::Rc;
 
-use libspa::pod::deserialize::PodDeserializer;
+use itertools::Itertools;
+use libspa::pod::deserialize::{ArrayPodDeserializer, PodDeserializer};
+use libspa::utils::{Id, SpaTypes};
 use pipewire;
 
-use pipewire::client::Client;
-use pipewire::context::Context;
+use pipewire::context::{Context, ContextBox, ContextRc};
 use pipewire::device::Device;
 use pipewire::link::Link;
-use pipewire::main_loop::MainLoop;
+use pipewire::loop_::Signal;
+use pipewire::main_loop::{MainLoop, MainLoopBox, MainLoopRc};
 use pipewire::metadata::Metadata;
 use pipewire::node::Node;
 use pipewire::port::Port;
-use pipewire::properties::properties;
 use pipewire::proxy::{Listener, ProxyT};
 use pipewire::spa::param::ParamType;
 
-use libspa::param::format::{MediaSubtype, MediaType};
-use libspa::param::format_utils;
-use libspa::pod::{Pod, Value};
+use libspa::pod::{Pod, Value, ValueArray};
+use pipewire::proxy::ProxyListener;
 use tokio::runtime::Handle;
 use tokio::sync::RwLock;
 use tokio::sync::mpsc::{Sender, channel};
@@ -48,143 +49,230 @@ pub enum AudioMessage {
     SourceVolume(Vec<f32>),
 }
 
+struct Proxies {
+    proxies_t: HashMap<u32, Box<dyn ProxyT>>,
+    listeners: HashMap<u32, Vec<Box<dyn Listener>>>,
+}
+
+impl Proxies {
+    fn new() -> Self {
+        Self {
+            proxies_t: HashMap::new(),
+            listeners: HashMap::new(),
+        }
+    }
+
+    fn add_proxy_t(&mut self, proxy_t: Box<dyn ProxyT>, listener: Box<dyn Listener>) {
+        let proxy_id = {
+            let proxy = proxy_t.upcast_ref();
+            proxy.id()
+        };
+
+        self.proxies_t.insert(proxy_id, proxy_t);
+
+        let v = self.listeners.entry(proxy_id).or_default();
+        v.push(listener);
+    }
+
+    fn add_proxy_listener(&mut self, proxy_id: u32, listener: ProxyListener) {
+        let v = self.listeners.entry(proxy_id).or_default();
+        v.push(Box::new(listener));
+    }
+
+    fn remove(&mut self, proxy_id: u32) {
+        self.proxies_t.remove(&proxy_id);
+        self.listeners.remove(&proxy_id);
+    }
+}
+
 fn audio_generator(output: Sender<Message>, rt: Handle) -> Result<(), AudioError> {
-    let mainloop = MainLoop::new(None)?;
-    let context = Context::new(&mainloop)?;
-    let core = context.connect(None)?;
-    let registry = Rc::new(core.get_registry()?);
-    let core = Rc::new(core);
-    let registry_weak = Rc::downgrade(&registry);
+    let mainloop = MainLoopRc::new(None)?;
+    let mainloop_weak = mainloop.downgrade();
+    let context = ContextRc::new(&mainloop, None)?;
+    let core = context.connect_rc(None)?;
+    let mainloop_weak = mainloop.downgrade();
 
-    let persistence_store = Rc::new(RwLock::new(
-        Vec::<(Box<dyn ProxyT>, Box<dyn Listener>)>::new(),
-    ));
-    let default_sink = Rc::new(RwLock::new(None));
-    let default_sink_weak = Rc::downgrade(&default_sink);
-
-    let default_sink_node = Rc::new(RwLock::new(None));
-
-    let _registry_listener = registry
+    let _listener = core
         .add_listener_local()
-        .global(move |obj| {
-            let registry = match registry_weak.upgrade() {
-                Some(x) => x,
-                None => return,
-            };
-
-            match &obj.type_ {
-                pipewire::types::ObjectType::Metadata => {
-                    let metadata: Metadata = registry.bind(obj).unwrap();
-                    let default_sink_weak = default_sink_weak.clone();
-                    let core = core.clone();
-                    let obj_listener = metadata
-                        .add_listener_local()
-                        .property(move |_seq, key, _type_, value| {
-                            let value = value.map(|v| String::from(v));
-                            if let Some(default_sink) = default_sink_weak.upgrade() {
-                                if let Some("default.audio.sink") = key {
-                                    let mut default_sink = default_sink.blocking_write();
-                                    if *default_sink != value {
-                                        *default_sink = value;
-                                        drop(default_sink);
-                                        core.sync(1).unwrap();
+        .info(|info| {
+            dbg!(info);
+        })
+        .done(|_id, _seq| {})
+        .error(move |id, seq, res, message| {
+            log::error!("id: {id}, seq: {seq}, res: {res}, message: {message}");
+            if id == 0 {
+                if let Some(mainloop) = mainloop_weak.upgrade() {
+                    mainloop.quit();
+                }
+            }
+        });
+    let registry = core.get_registry_rc()?;
+    let registry_weak = registry.downgrade();
+    let proxies = Rc::new(RefCell::new(Proxies::new()));
+    let default_sink = Rc::new(RefCell::new(None));
+    let _listener = registry
+        .add_listener_local()
+        .global(move |global| {
+            if let Some(registry) = registry_weak.upgrade() {
+                use pipewire::types::ObjectType;
+                let p: Option<(Box<dyn ProxyT>, Box<dyn Listener>)> = match global.type_ {
+                    ObjectType::Node => {
+                        let node: Node = registry.bind(global).unwrap();
+                        let output = output.clone();
+                        let obj_listener = node
+                            .add_listener_local()
+                            .info(|info| {
+                                dbg!(info);
+                            })
+                            .param(move |_seq, param_type, _index, _next, param| {
+                                match param_type {
+                                    ParamType::Props => {}
+                                    _ => unreachable!(),
+                                }
+                                let param_object = match param.map(Pod::as_object) {
+                                    Some(v) => v,
+                                    None => unreachable!(),
+                                };
+                                let param_object = match param_object {
+                                    Ok(v) => v,
+                                    Err(e) => {
+                                        log::error!("{}", e);
+                                        unreachable!();
                                     }
                                 };
-                            };
-                            0
-                        })
-                        .register();
-                    persistence_store
-                        .blocking_write()
-                        .push((Box::new(metadata), Box::new(obj_listener)));
-                }
-                pipewire::types::ObjectType::Node => {
-                    let node: Node = registry.bind(obj).unwrap();
-                    if let Some(Some(name)) = obj.props.map(|props| {
-                        props
-                            .iter()
-                            .find_map(|(key, value)| (key == "node.name").then_some(value))
-                    }) {
-                        let default_sink_weak = default_sink_weak.clone();
-                        let default_sink = if let Some(default_sink) = default_sink_weak.upgrade() {
-                            default_sink
-                        } else {
-                            return;
-                        };
-                        dbg!(name, &default_sink);
-                        let default_sink_name =
-                            if let Some(default_sink_name) = default_sink.blocking_read().clone() {
-                                default_sink_name
-                            } else {
-                                return;
-                            };
-                        if default_sink_name != name {
-                            return;
-                        }
-                    } else {
-                        return;
-                    };
-                    node.subscribe_params(&[ParamType::Props]);
-                    let output = output.clone();
-                    let obj_listener = node
-                        .add_listener_local()
-                        .param(move |_seq, _id, _index, _next, param| {
-                            let params =
-                                param.map(|v| PodDeserializer::deserialize_any_from(v.as_bytes()));
-                            let params = match params {
-                                Some(v) => v,
-                                None => return,
-                            }
-                            .ok();
-                            let params = match params {
-                                Some(v) => v.1,
-                                None => return,
-                            };
-                            let params = if let libspa::pod::Value::Object(params) = params {
-                                params
-                            } else {
-                                return;
-                            };
-
-                            let volume = if let Some(volume) =
-                                params.properties.iter().find_map(|v| {
-                                    if v.key == libspa::sys::SPA_PROP_channelVolumes {
-                                        Some(v.value.clone())
+                                let volume_prop =
+                                    if let Some(volume_prop) = param_object.find_prop(Id(65544)) {
+                                        volume_prop
                                     } else {
-                                        None
-                                    }
-                                }) {
-                                volume
-                            } else {
-                                return;
-                            };
-                            let volume =
-                                if let Value::ValueArray(libspa::pod::ValueArray::Float(volume)) =
-                                    volume
+                                        return;
+                                    };
+                                let volume_bytes = volume_prop.value().as_bytes();
+
+                                let volume_value = if let Ok((_, value)) =
+                                    PodDeserializer::deserialize_from::<Value>(volume_bytes)
                                 {
-                                    volume
+                                    value
                                 } else {
                                     return;
                                 };
-                            output
-                                .blocking_send(Message::Audio(AudioMessage::SinkVolume(volume)))
-                                .unwrap();
+                                let volume_array = match volume_value {
+                                    Value::ValueArray(v) => v,
+                                    _ => unreachable!(),
+                                };
+                                let volume_float_array = match volume_array {
+                                    ValueArray::Float(v) => v,
+                                    _ => unreachable!(),
+                                };
+                                if let Err(e) = output.blocking_send(Message::Audio(
+                                    AudioMessage::SinkVolume(volume_float_array),
+                                )) {
+                                    log::error!("Audio Error: {:?}", e);
+                                };
+                            })
+                            .register();
+                        node.subscribe_params(&[ParamType::Props]);
+                        node.enum_params(0, None, 0, u32::MAX);
+                        Some((Box::new(node), Box::new(obj_listener)))
+                    }
+                    ObjectType::Port => {
+                        let port: Port = registry.bind(global).unwrap();
+                        let port_listener = port
+                            .add_listener_local()
+                            .info(|info| {
+                                dbg!(info);
+                            })
+                            .param(|seq, param_type, index, next, param| {
+                                dbg!((seq, param_type, index, next, param.map(Pod::as_bytes)));
+                            })
+                            .register();
+                        Some((Box::new(port), Box::new(port_listener)))
+                    }
+                    ObjectType::Link => {
+                        let link: Link = registry.bind(global).unwrap();
+                        let link_listener = link
+                            .add_listener_local()
+                            .info(|info| {
+                                dbg!(info);
+                            })
+                            .register();
+                        Some((Box::new(link), Box::new(link_listener)))
+                    }
+                    ObjectType::Metadata => {
+                        let metadata: Metadata = registry.bind(global).unwrap();
+                        let default_sink = default_sink.clone();
+                        let metadata_listener = metadata
+                            .add_listener_local()
+                            .property(move |seq, key, metadata_type, value| {
+                                if let Some(("default.audio.sink", value)) = key.zip(value.clone())
+                                {
+                                    let value = value.split_terminator("\"").nth(3);
+                                    if let Some(value) = value {
+                                        let value = value.to_string();
+                                        default_sink.replace(Some(value));
+                                    }
+                                    dbg!(&default_sink);
+                                }
+                                dbg!((seq, key, metadata_type, value));
+                                0
+                            })
+                            .register();
+                        Some((Box::new(metadata), Box::new(metadata_listener)))
+                    }
+                    ObjectType::Device => {
+                        let device: Device = registry.bind(global).unwrap();
+                        let device_listener = device
+                            .add_listener_local()
+                            .info(|info| {
+                                dbg!(info);
+                            })
+                            .param(|seq, param_type, a, b, value| {
+                                dbg!((seq, param_type, a, b, value.map(Pod::as_bytes)));
+                            })
+                            .register();
+                        device.subscribe_params(&[ParamType::Props, ParamType::Meta]);
+                        device.enum_params(0, None, 0, u32::MAX);
+                        Some((Box::new(device), Box::new(device_listener)))
+                    }
+                    ObjectType::Client
+                    | ObjectType::Module
+                    | ObjectType::Factory
+                    | ObjectType::Other(_)
+                    | ObjectType::Profiler
+                    | ObjectType::Core => None,
+                    _ => {
+                        dbg!(global);
+                        None
+                    }
+                };
+
+                if let Some((proxy_spe, listener_spe)) = p {
+                    let proxy = proxy_spe.upcast_ref();
+                    let proxy_id = proxy.id();
+                    // Use a weak ref to prevent references cycle between Proxy and proxies:
+                    // - ref on proxies in the closure, bound to the Proxy lifetime
+                    // - proxies owning a ref on Proxy as well
+                    let proxies_weak = Rc::downgrade(&proxies);
+
+                    let listener = proxy
+                        .add_listener_local()
+                        .removed(move || {
+                            if let Some(proxies) = proxies_weak.upgrade() {
+                                proxies.borrow_mut().remove(proxy_id);
+                            }
                         })
                         .register();
-                    default_sink_node
-                        .blocking_write()
-                        .replace((node, obj_listener));
-                }
 
-                x => {
-                    log::info!("Pipewire message, don't care: {x:?}");
+                    proxies.borrow_mut().add_proxy_t(proxy_spe, listener_spe);
+                    proxies.borrow_mut().add_proxy_listener(proxy_id, listener);
                 }
             }
         })
         .register();
+
     mainloop.run();
     Ok(())
 }
+
 pub fn audio_subscription(rt: Handle) -> tokio_stream::wrappers::ReceiverStream<Message> {
     let (sender, receiver) = channel(1);
 

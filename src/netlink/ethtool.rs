@@ -120,12 +120,12 @@ impl NetlinkRetrievable<EthtoolError> for EthtoolPhy {
             for attr in attr_handle.iter() {
                 match attr.nla_type().nla_type() {
                     EthtoolPhyAttribute::Unspecified => {
-                        log::error!(
+                        log::info!(
                             "Unspecified Value encountered when parsing get-interfaces result"
                         );
                     }
                     EthtoolPhyAttribute::UnrecognizedConst(v) => {
-                        log::error!(
+                        log::info!(
                             "Unrecognized Const encountered when parsing get-interfaces result: {v}"
                         );
                     }

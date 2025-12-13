@@ -210,7 +210,7 @@ impl NetlinkRetrievable<Nl80211Error> for Nl80211Interface {
                         );
                     }
                     Nl80211InterfaceAttribute::UnrecognizedConst(v) => {
-                        log::error!(
+                        log::info!(
                             "Unrecognized Const encountered when parsing get-interfaces result: {v}"
                         );
                     }

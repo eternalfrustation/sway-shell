@@ -419,7 +419,7 @@ impl NetlinkRetrievable<RoutelinkStatsError> for LinkInfo {
                         log::error!("Unspecified Value encountered when parsing Getlink result");
                     }
                     UnrecognizedConst(v) => {
-                        log::error!(
+                        log::info!(
                             "Unrecognized Const encountered when parsing get-link result: {v}"
                         );
                     }

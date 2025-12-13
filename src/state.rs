@@ -173,7 +173,12 @@ impl State {
                         continue;
                     }
                     right.push(Renderable::Text {
-                        text: name.clone(),
+                        text: format!(
+                            "{} {}↓ {}↑",
+                            name,
+                            display_bytes(*up_rate) + "/s",
+                            display_bytes(*down_rate) + "/s",
+                        ),
                         fg: 0xffffffff,
                         bg: 0x00000000,
                     });
@@ -294,13 +299,14 @@ fn display_bytes(x: u64) -> String {
     let mut scaled_size = x;
     let mut current_unit_idx = 0;
     while scaled_size
-    > (UNITS
-        .get(current_unit_idx + 1)
-        .map(|unit| unit.1)
-        .unwrap_or(u64::MAX))
+        > (UNITS
+            .get(current_unit_idx + 1)
+            .map(|unit| unit.1)
+            .unwrap_or(u64::MAX))
     {
         current_unit_idx += 1;
         scaled_size /= UNITS[current_unit_idx].1
     }
-    format!("{scaled_size:5} {}", UNITS[current_unit_idx].0)
+    let display_str = format!("{scaled_size} {}", UNITS[current_unit_idx].0);
+    format!("{display_str:>8}")
 }

@@ -338,7 +338,6 @@ impl SeatHandler for Display {
                 .get_pointer(qh, &seat)
                 .expect("Failed to create pointer");
             self.pointer = Some(pointer);
-            dbg!(&self.pointer);
         }
     }
 
