@@ -2,16 +2,14 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
 
-use itertools::Itertools;
-use libspa::pod::deserialize::{ArrayPodDeserializer, PodDeserializer};
-use libspa::utils::{Id, SpaTypes};
+use libspa::pod::deserialize::PodDeserializer;
+use libspa::utils::Id;
 use pipewire;
 
-use pipewire::context::{Context, ContextBox, ContextRc};
+use pipewire::context::ContextRc;
 use pipewire::device::Device;
 use pipewire::link::Link;
-use pipewire::loop_::Signal;
-use pipewire::main_loop::{MainLoop, MainLoopBox, MainLoopRc};
+use pipewire::main_loop::MainLoopRc;
 use pipewire::metadata::Metadata;
 use pipewire::node::Node;
 use pipewire::port::Port;
@@ -21,7 +19,6 @@ use pipewire::spa::param::ParamType;
 use libspa::pod::{Pod, Value, ValueArray};
 use pipewire::proxy::ProxyListener;
 use tokio::runtime::Handle;
-use tokio::sync::RwLock;
 use tokio::sync::mpsc::{Sender, channel};
 
 use crate::state::Message;
@@ -85,9 +82,9 @@ impl Proxies {
     }
 }
 
-fn audio_generator(output: Sender<Message>, rt: Handle) -> Result<(), AudioError> {
+fn audio_generator(output: Sender<Message>, _rt: Handle) -> Result<(), AudioError> {
     let mainloop = MainLoopRc::new(None)?;
-    let mainloop_weak = mainloop.downgrade();
+    let _mainloop_weak = mainloop.downgrade();
     let context = ContextRc::new(&mainloop, None)?;
     let core = context.connect_rc(None)?;
     let mainloop_weak = mainloop.downgrade();

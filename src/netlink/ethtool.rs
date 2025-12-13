@@ -111,7 +111,7 @@ impl NetlinkRetrievable<EthtoolError> for EthtoolPhy {
             // Don't parse message unless receive proper payload (non-error, non-empty, non-ack)
             let payload: &Genlmsghdr<_, _> = match msg.nl_payload() {
                 NlPayload::Payload(p) => p,
-                x => {
+                _x => {
                     continue;
                 }
             };

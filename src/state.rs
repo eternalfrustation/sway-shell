@@ -1,4 +1,3 @@
-use core::f32;
 
 use mpd::Status;
 use tokio::sync::mpsc::Sender;
@@ -142,11 +141,11 @@ impl State {
         for network in self.networks.iter() {
             match network {
                 Network::Wifi {
-                    if_index,
-                    if_name,
+                    if_index: _,
+                    if_name: _,
                     ssid,
-                    up,
-                    down,
+                    up: _,
+                    down: _,
                     up_rate,
                     down_rate,
                 } => {
@@ -162,10 +161,10 @@ impl State {
                     });
                 }
                 Network::Network {
-                    if_index,
+                    if_index: _,
                     name,
-                    up,
-                    down,
+                    up: _,
+                    down: _,
                     up_rate,
                     down_rate,
                 } => {

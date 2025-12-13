@@ -35,7 +35,7 @@ impl Network {
     fn from_linkinfo(
         link_info: Vec<LinkInfo>,
         wifi_interfaces: Vec<Nl80211Interface>,
-        ethtool_interfaces: Vec<EthtoolPhy>,
+        _ethtool_interfaces: Vec<EthtoolPhy>,
         prev_link_info: Vec<Self>,
         interval: Duration,
     ) -> Vec<Self> {
@@ -45,12 +45,12 @@ impl Network {
                 let prev_link_stats = prev_link_info.iter().find_map(|prev_link| match prev_link {
                     Network::Wifi {
                         if_index,
-                        if_name,
-                        ssid,
+                        if_name: _,
+                        ssid: _,
                         up,
                         down,
-                        up_rate,
-                        down_rate,
+                        up_rate: _,
+                        down_rate: _,
                     } => {
                         if *if_index == link.ifi_index {
                             Some((up, down))
@@ -60,11 +60,11 @@ impl Network {
                     }
                     Network::Network {
                         if_index,
-                        name,
+                        name: _,
                         up,
                         down,
-                        up_rate,
-                        down_rate,
+                        up_rate: _,
+                        down_rate: _,
                     } => {
                         if *if_index == link.ifi_index {
                             Some((up, down))
