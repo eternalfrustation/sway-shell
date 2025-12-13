@@ -187,10 +187,11 @@ impl State {
 
         for sink_volume in self.audio_state.sink_volume.iter() {
             right.push(Renderable::Text {
-                text: format!("{}%", sink_volume.cbrt() * 100.0),
+                text: format!("{:.1}%", sink_volume.cbrt() * 100.0),
                 fg: 0xffffffff,
                 bg: 0x00000000,
-            })
+            });
+            right.push(Renderable::Space(1.0))
         }
 
         RenderState {
