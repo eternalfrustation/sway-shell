@@ -91,9 +91,6 @@ fn audio_generator(output: Sender<Message>, _rt: Handle) -> Result<(), AudioErro
 
     let _listener = core
         .add_listener_local()
-        .info(|info| {
-            dbg!(info);
-        })
         .done(|_id, _seq| {})
         .error(move |id, seq, res, message| {
             log::error!("id: {id}, seq: {seq}, res: {res}, message: {message}");
@@ -118,9 +115,6 @@ fn audio_generator(output: Sender<Message>, _rt: Handle) -> Result<(), AudioErro
                         let output = output.clone();
                         let obj_listener = node
                             .add_listener_local()
-                            .info(|info| {
-                                dbg!(info);
-                            })
                             .param(move |_seq, param_type, _index, _next, param| {
                                 match param_type {
                                     ParamType::Props => {}
@@ -171,29 +165,6 @@ fn audio_generator(output: Sender<Message>, _rt: Handle) -> Result<(), AudioErro
                         node.enum_params(0, None, 0, u32::MAX);
                         Some((Box::new(node), Box::new(obj_listener)))
                     }
-                    ObjectType::Port => {
-                        let port: Port = registry.bind(global).unwrap();
-                        let port_listener = port
-                            .add_listener_local()
-                            .info(|info| {
-                                dbg!(info);
-                            })
-                            .param(|seq, param_type, index, next, param| {
-                                dbg!((seq, param_type, index, next, param.map(Pod::as_bytes)));
-                            })
-                            .register();
-                        Some((Box::new(port), Box::new(port_listener)))
-                    }
-                    ObjectType::Link => {
-                        let link: Link = registry.bind(global).unwrap();
-                        let link_listener = link
-                            .add_listener_local()
-                            .info(|info| {
-                                dbg!(info);
-                            })
-                            .register();
-                        Some((Box::new(link), Box::new(link_listener)))
-                    }
                     ObjectType::Metadata => {
                         let metadata: Metadata = registry.bind(global).unwrap();
                         let default_sink = default_sink.clone();
@@ -207,37 +178,13 @@ fn audio_generator(output: Sender<Message>, _rt: Handle) -> Result<(), AudioErro
                                         let value = value.to_string();
                                         default_sink.replace(Some(value));
                                     }
-                                    dbg!(&default_sink);
                                 }
-                                dbg!((seq, key, metadata_type, value));
                                 0
                             })
                             .register();
                         Some((Box::new(metadata), Box::new(metadata_listener)))
                     }
-                    ObjectType::Device => {
-                        let device: Device = registry.bind(global).unwrap();
-                        let device_listener = device
-                            .add_listener_local()
-                            .info(|info| {
-                                dbg!(info);
-                            })
-                            .param(|seq, param_type, a, b, value| {
-                                dbg!((seq, param_type, a, b, value.map(Pod::as_bytes)));
-                            })
-                            .register();
-                        device.subscribe_params(&[ParamType::Props, ParamType::Meta]);
-                        device.enum_params(0, None, 0, u32::MAX);
-                        Some((Box::new(device), Box::new(device_listener)))
-                    }
-                    ObjectType::Client
-                    | ObjectType::Module
-                    | ObjectType::Factory
-                    | ObjectType::Other(_)
-                    | ObjectType::Profiler
-                    | ObjectType::Core => None,
                     _ => {
-                        dbg!(global);
                         None
                     }
                 };
