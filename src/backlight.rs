@@ -68,7 +68,6 @@ fn backlight_generator(sender: Sender<Message>) -> Result<(), BacklightError> {
         let actual_brightness_path = backlight_dir.path().join("actual_brightness");
         let brightness_path = backlight_dir.path().join("brightness");
         let max_brightness_path = backlight_dir.path().join("max_brightness");
-        dbg!(&actual_brightness_path);
         let actual_brightness_file = File::open(actual_brightness_path)?;
         backlight_poller.registry().register(
             &mut SourceFd(&actual_brightness_file.as_raw_fd()),

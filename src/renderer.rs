@@ -326,21 +326,21 @@ impl Renderer {
         let font_lines_points_buffer =
             device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
                 label: Some("Font Lines texture"),
-                contents: &[0; 128 * 1024],
+                contents: &[0; 1024 * 1024],
                 usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
             });
 
         let font_quadratic_points_buffer =
             device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
                 label: Some("Font Quad texture"),
-                contents: &[0; 128 * 1024],
+                contents: &[0; 1024 * 1024],
                 usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
             });
 
         let font_cubic_points_buffer =
             device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
                 label: Some("Font Cubic texture"),
-                contents: &[0; 128 * 1024],
+                contents: &[0; 1024 * 1024],
                 usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
             });
 
@@ -417,7 +417,7 @@ impl Renderer {
         // You can now only create 128 squares
         let instance_buffer = device.create_buffer(&BufferDescriptor {
             label: Some("Instance Buffer"),
-            size: 128 * mem::size_of::<Instance>() as u64,
+            size: 1024 * mem::size_of::<Instance>() as u64,
             mapped_at_creation: false,
             usage: wgpu::BufferUsages::VERTEX.union(wgpu::BufferUsages::COPY_DST),
         });

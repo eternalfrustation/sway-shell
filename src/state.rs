@@ -1,3 +1,5 @@
+use std::time::SystemTime;
+
 use mpd::Status;
 use tokio::sync::mpsc::Sender;
 use tokio_stream::StreamExt;
@@ -6,6 +8,7 @@ use crate::{
     audio::{AudioMessage, AudioState},
     backlight::{Backlight, BacklightMessage},
     battery::{BatteryMessage, PowerSupply, PowerSupplyStatus},
+    clock::ClockMessage,
     font::{Line, Segment, Vec2},
     mpd::MpdMessage,
     network::{Network, NetworkMessage},
@@ -25,6 +28,7 @@ pub struct State {
     pub focused_window_name: Option<String>,
     pub backlights: Vec<Backlight>,
     pub power_supply: Vec<PowerSupply>,
+    pub clock: chrono::DateTime<chrono::Local>,
 }
 
 #[derive(Debug)]
@@ -35,6 +39,7 @@ pub enum Message {
     Audio(AudioMessage),
     Backlight(BacklightMessage),
     Battery(BatteryMessage),
+    ClockMessage(ClockMessage),
     PointerPress { pos: Vec2 },
     PointerRelease { pos: Vec2 },
 }
@@ -42,6 +47,7 @@ pub enum Message {
 impl State {
     pub fn new() -> Self {
         Self {
+            clock: chrono::Local::now(),
             power_supply: vec![],
             backlights: vec![],
             focused_window_name: None,
@@ -194,28 +200,69 @@ impl State {
         }
 
         for sink_volume in self.audio_state.sink_volume.iter() {
-            right.push(Renderable::Box { fg: 0x000f0fff, bg: 0x000f0fff, width: 1., height: 1., skip: 0.0 });
-            right.push(Renderable::Box { fg: 0x0000ffff, bg: 0x0000ffff, width: 1., height: sink_volume.cbrt(), skip: 1.0 });
+            right.push(Renderable::Box {
+                fg: 0x000f0fff,
+                bg: 0x000f0fff,
+                width: 1.,
+                height: 1.,
+                skip: 0.0,
+            });
+            right.push(Renderable::Box {
+                fg: 0x0000ffff,
+                bg: 0x0000ffff,
+                width: 1.,
+                height: sink_volume.cbrt(),
+                skip: 1.0,
+            });
         }
 
         for backlight in &self.backlights {
-            right.push(Renderable::Box { fg: 0x44444444, bg: 0x44444444, width: 1., height: 1., skip: 0.0 });
-            right.push(Renderable::Box { fg: 0xffffffff, bg: 0xffffffff, width: 1., height: backlight.brightness as f32 / backlight.max_brightness as f32, skip: 1.0 });
+            right.push(Renderable::Box {
+                fg: 0x44444444,
+                bg: 0x44444444,
+                width: 1.,
+                height: 1.,
+                skip: 0.0,
+            });
+            right.push(Renderable::Box {
+                fg: 0xffffffff,
+                bg: 0xffffffff,
+                width: 1.,
+                height: backlight.brightness as f32 / backlight.max_brightness as f32,
+                skip: 1.0,
+            });
         }
 
         for power_supply in &self.power_supply {
             right.push(Renderable::Space(1.0));
             right.push(match power_supply {
-                PowerSupply::Battery { status, capacity } => Renderable::Text { text: format!("{capacity}%"), fg: match status {
-                    PowerSupplyStatus::Charging => 0x0000ffff,
-                    PowerSupplyStatus::Full => 0x0000ffff,
-                    _ => 0xffffffff,
-                }, bg: 0x00000000 },
-                PowerSupply::Mains { online } => {
-                    Renderable::Text{ text: if *online {"Plugged".to_string()} else {continue}, fg: 0xffffffff, bg: 0x00000000 }
-                }
+                PowerSupply::Battery { status, capacity } => Renderable::Text {
+                    text: format!("{capacity}%"),
+                    fg: match status {
+                        PowerSupplyStatus::Charging => 0x0000ffff,
+                        PowerSupplyStatus::Full => 0x0000ffff,
+                        _ => 0xffffffff,
+                    },
+                    bg: 0x00000000,
+                },
+                PowerSupply::Mains { online } => Renderable::Text {
+                    text: if *online {
+                        "Plugged".to_string()
+                    } else {
+                        continue;
+                    },
+                    fg: 0xffffffff,
+                    bg: 0x00000000,
+                },
             })
         }
+
+        right.push(Renderable::Space(1.0));
+        right.push(Renderable::Text {
+            text: self.clock.to_rfc2822(),
+            fg: 0xffffffff,
+            bg: 0x00000000,
+        });
 
         RenderState {
             left,
@@ -321,6 +368,9 @@ impl State {
             },
             Message::Battery(battery_message) => match battery_message {
                 BatteryMessage::UpdatePowerSupplies(items) => self.power_supply = items,
+            },
+            Message::ClockMessage(clock_message) => match clock_message {
+                ClockMessage::TimeUpdate(x) => self.clock = x,
             },
         }
     }

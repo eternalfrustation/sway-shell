@@ -13,6 +13,7 @@ pub mod backlight;
 pub mod audio;
 pub mod battery;
 pub mod files;
+pub mod clock;
 
 
 use layer::Display;
@@ -27,7 +28,7 @@ use tokio_stream::{StreamExt, StreamMap};
 use state::State;
 use sway::sway_subscription;
 
-use crate::{audio::audio_subscription, backlight::backlight_subscription, battery::battery_subscription, network::network_subscription};
+use crate::{audio::audio_subscription, backlight::backlight_subscription, battery::battery_subscription, clock::clock_subscription, network::network_subscription};
 
 fn main() {
     pretty_env_logger::init();
@@ -45,6 +46,7 @@ fn main() {
     streams.insert("audio", audio_subscription(rt.handle().clone()));
     streams.insert("backlight", backlight_subscription(rt.handle().clone()));
     streams.insert("battery", battery_subscription(rt.handle().clone()));
+    streams.insert("clock", clock_subscription(rt.handle().clone()));
     streams.insert("display", state_stream);
     let (display_sender, display_receiver) = channel(1);
     // Currently using the merge method, ideally would use a StreamMap
