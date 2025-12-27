@@ -149,7 +149,7 @@ fn battery_generator(sender: Sender<Message>) -> Result<(), BatteryError> {
         sender.blocking_send(Message::Battery(BatteryMessage::UpdatePowerSupplies(
             power_supplies,
         )))?;
-        thread::sleep(Duration::from_mins(1));
+        thread::sleep(Duration::from_secs(10));
     }
 }
 

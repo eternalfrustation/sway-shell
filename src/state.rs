@@ -194,20 +194,13 @@ impl State {
         }
 
         for sink_volume in self.audio_state.sink_volume.iter() {
-            right.push(Renderable::Text {
-                text: format!("{:.1}%", sink_volume.cbrt() * 100.0),
-                fg: 0xffffffff,
-                bg: 0x00000000,
-            });
-            right.push(Renderable::Space(1.0))
+            right.push(Renderable::Box { fg: 0x000f0fff, bg: 0x000f0fff, width: 1., height: 1., skip: 0.0 });
+            right.push(Renderable::Box { fg: 0x0000ffff, bg: 0x0000ffff, width: 1., height: sink_volume.cbrt(), skip: 1.0 });
         }
 
         for backlight in &self.backlights {
-            right.push(Renderable::Text {
-                text: format!("{}%", backlight.brightness * 100 / backlight.max_brightness),
-                fg: 0xffffffff,
-                bg: 0x00000000,
-            })
+            right.push(Renderable::Box { fg: 0x44444444, bg: 0x44444444, width: 1., height: 1., skip: 0.0 });
+            right.push(Renderable::Box { fg: 0xffffffff, bg: 0xffffffff, width: 1., height: backlight.brightness as f32 / backlight.max_brightness as f32, skip: 1.0 });
         }
 
         for power_supply in &self.power_supply {
