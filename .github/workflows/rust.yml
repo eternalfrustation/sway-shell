@@ -17,7 +17,7 @@ jobs:
     steps:
     - uses: actions/checkout@v4
     - name: Install Dependencies
-      run: sudo apt update -y && sudo apt upgrade -y && sudo apt install libwayland-dev libpipewire-0.3-dev
+      run: sudo apt update -y && sudo apt upgrade -y && sudo apt install libwayland-dev libpipewire-0.3-dev libudev-dev
     - name: Check
       run: cargo check --verbose
     - name: Run tests
