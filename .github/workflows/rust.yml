@@ -16,6 +16,8 @@ jobs:
 
     steps:
     - uses: actions/checkout@v4
+    - name: Install Dependencies
+      run: apt install libwayland-dev
     - name: Check
       run: cargo check --verbose
     - name: Run tests
