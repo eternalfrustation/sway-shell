@@ -69,6 +69,7 @@ pub enum EthtoolPhyAttribute {
     UpstreamSfpName = 7,
     DownstreamSfpName = 8,
 }
+
 impl neli::consts::genl::NlAttrType for EthtoolPhyAttribute {}
 
 pub type EthtoolError =

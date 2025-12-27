@@ -4,6 +4,8 @@ use tokio_stream::StreamExt;
 
 use crate::{
     audio::{AudioMessage, AudioState},
+    backlight::{Backlight, BacklightMessage},
+    battery::{BatteryMessage, PowerSupply, PowerSupplyStatus},
     font::{Line, Segment, Vec2},
     mpd::MpdMessage,
     network::{Network, NetworkMessage},
@@ -21,6 +23,8 @@ pub struct State {
     pub networks: Vec<Network>,
     pub audio_state: AudioState,
     pub focused_window_name: Option<String>,
+    pub backlights: Vec<Backlight>,
+    pub power_supply: Vec<PowerSupply>,
 }
 
 #[derive(Debug)]
@@ -29,6 +33,8 @@ pub enum Message {
     Mpd(MpdMessage),
     Network(NetworkMessage),
     Audio(AudioMessage),
+    Backlight(BacklightMessage),
+    Battery(BatteryMessage),
     PointerPress { pos: Vec2 },
     PointerRelease { pos: Vec2 },
 }
@@ -36,6 +42,8 @@ pub enum Message {
 impl State {
     pub fn new() -> Self {
         Self {
+            power_supply: vec![],
+            backlights: vec![],
             focused_window_name: None,
             workspaces: Vec::new(),
             mpd_status: None,
@@ -194,6 +202,28 @@ impl State {
             right.push(Renderable::Space(1.0))
         }
 
+        for backlight in &self.backlights {
+            right.push(Renderable::Text {
+                text: format!("{}%", backlight.brightness * 100 / backlight.max_brightness),
+                fg: 0xffffffff,
+                bg: 0x00000000,
+            })
+        }
+
+        for power_supply in &self.power_supply {
+            right.push(Renderable::Space(1.0));
+            right.push(match power_supply {
+                PowerSupply::Battery { status, capacity } => Renderable::Text { text: format!("{capacity}%"), fg: match status {
+                    PowerSupplyStatus::Charging => 0x0000ffff,
+                    PowerSupplyStatus::Full => 0x0000ffff,
+                    _ => 0xffffffff,
+                }, bg: 0x00000000 },
+                PowerSupply::Mains { online } => {
+                    Renderable::Text{ text: if *online {"Plugged".to_string()} else {continue}, fg: 0xffffffff, bg: 0x00000000 }
+                }
+            })
+        }
+
         RenderState {
             left,
             right,
@@ -289,6 +319,15 @@ impl State {
             Message::Audio(audio_message) => match audio_message {
                 AudioMessage::SinkVolume(items) => self.audio_state.sink_volume = items,
                 AudioMessage::SourceVolume(items) => self.audio_state.source_volume = items,
+            },
+            Message::Backlight(backlight_message) => match backlight_message {
+                BacklightMessage::BacklightsInit(backlights) => self.backlights = backlights,
+                BacklightMessage::BrightnessChange { index, brightness } => {
+                    self.backlights[index].brightness = brightness
+                }
+            },
+            Message::Battery(battery_message) => match battery_message {
+                BatteryMessage::UpdatePowerSupplies(items) => self.power_supply = items,
             },
         }
     }

@@ -17,7 +17,7 @@ use neli::{
 
 use crate::netlink::ethtool::EthtoolError;
 use crate::netlink::nl80211::Nl80211Error;
-use crate::netlink::routel::{ RoutelinkStatsError,RoutelinkInfoError };
+use crate::netlink::routel::{RoutelinkInfoError, RoutelinkStatsError};
 
 #[derive(Debug, Clone)]
 pub struct WifiStation {
@@ -126,10 +126,11 @@ impl Netlink {
         )
         .await?;
 
+
         ethtool_sock.enable_ext_ack(true)?;
 
         let nl80211_family_id = nl80211_sock.resolve_genl_family("nl80211").await?;
-        let ethtool_family_id = nl80211_sock.resolve_genl_family("ethtool").await?;
+        let ethtool_family_id = ethtool_sock.resolve_genl_family("ethtool").await?;
 
         let (rtnl, _) = NlRouter::connect(NlFamily::Route, None, Groups::empty()).await?;
         rtnl.enable_ext_ack(true)?;
