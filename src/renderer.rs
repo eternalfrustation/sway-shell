@@ -1,9 +1,6 @@
-use itertools::Itertools;
 use std::mem;
 
 use std::{borrow::Cow, ptr::NonNull, sync::Arc};
-
-use ab_glyph::Font;
 use bytemuck::Zeroable;
 use raw_window_handle::{
     RawDisplayHandle, RawWindowHandle, WaylandDisplayHandle, WaylandWindowHandle,
@@ -16,8 +13,10 @@ use wayland_client::{Proxy, protocol::wl_surface::WlSurface};
 use wgpu::{AddressMode, DeviceDescriptor, FilterMode, SamplerDescriptor};
 use wgpu::{Buffer, BufferDescriptor, IndexFormat, PresentMode, RenderPipeline, util::DeviceExt};
 
+use ab_glyph::GlyphId;
 use crate::font::{FontContainer, GlyphOffLen};
 use crate::layer::DisplayMessage;
+use crate::shaper::TextShaper;
 
 #[repr(C)]
 #[derive(Copy, Clone, Debug, bytemuck::Pod, bytemuck::Zeroable)]
@@ -146,6 +145,8 @@ pub struct Renderer {
     pub font_quadratic_points_buffer: Buffer,
     pub font_cubic_points_buffer: Buffer,
     pub font_sdf: FontContainer,
+    /// HarfBuzz-based text shaper for proper font layout
+    pub text_shaper: TextShaper<'static>,
 }
 
 #[derive(Debug)]
@@ -422,11 +423,16 @@ impl Renderer {
             usage: wgpu::BufferUsages::VERTEX.union(wgpu::BufferUsages::COPY_DST),
         });
 
+        // Create the HarfBuzz-based text shaper for proper font layout
+        let text_shaper = TextShaper::new()
+            .expect("Failed to create text shaper from embedded font");
+
         Self {
             font_lines_points_buffer,
             font_quadratic_points_buffer,
             font_cubic_points_buffer,
             font_sdf: font_container,
+            text_shaper,
             width,
             height,
             adapter,
@@ -468,56 +474,44 @@ impl Renderer {
     ) -> (Vec<Instance>, f32) {
         let mut instances = Vec::new();
         let mut skip = initial_skip;
+        let upem = self.text_shaper.units_per_em() as f32;
+
         for item in renderables.into_iter() {
             match item {
                 Renderable::Text { text, fg, bg } => {
-                    let id = match text
-                        .chars()
-                        .map(|c| self.font_sdf.font_arc.glyph_id(c))
-                        .next()
-                    {
-                        Some(id) => id,
-                        None => continue,
-                    };
+                    // Use HarfBuzz-based text shaping for proper font layout
+                    // This handles kerning, ligatures, and complex script shaping correctly
+                    let shaped_glyphs = self.text_shaper.shape(text);
 
-                    let glyph_info = match self.font_sdf.load_char_with_id(id) {
-                        Some(x) => x,
-                        None => {
-                            skip += self.font_sdf.font_arc.h_advance_unscaled(id)
-                                / self.font_sdf.units_per_em;
-                            continue;
-                        }
-                    };
-                    instances.push(Instance {
-                        position: [skip + glyph_info.offset.x, -0.5 + glyph_info.offset.y],
-                        scale: [glyph_info.dimensions.x, -glyph_info.dimensions.y],
-                        fg: *fg,
-                        bg: *bg,
-                        lines_off: glyph_info.line_off,
-                        quadratic_off: glyph_info.bez2_off,
-                        cubic_off: glyph_info.bez3_off,
-                    });
-                    skip += glyph_info.advance;
+                    let mut text_cursor = skip;
+                    for shaped in shaped_glyphs {
+                        // Convert rustybuzz glyph ID (u32) to ab_glyph's GlyphId (u16)
+                        let glyph_id = GlyphId(shaped.glyph_id as u16);
 
-                    for (prev_id, id) in
-                        Vec::from_iter(text.chars().map(|c| self.font_sdf.font_arc.glyph_id(c)))
-                            .into_iter()
-                            .tuple_windows()
-                    {
-                        skip -= self.font_sdf.font_arc.kern_unscaled(prev_id, id);
-                        let glyph_info = match self.font_sdf.load_char_with_id(id) {
+                        // Load the glyph outline data
+                        let glyph_info = match self.font_sdf.load_glyph_by_id(glyph_id) {
                             Some(x) => {
                                 self.update_font();
                                 x
                             }
                             None => {
-                                skip += self.font_sdf.font_arc.h_advance_unscaled(id)
-                                    / self.font_sdf.units_per_em;
+                                // Skip glyphs we can't render (e.g., space characters without outlines)
+                                text_cursor += shaped.x_advance as f32 / upem;
                                 continue;
                             }
                         };
+
+                        // Calculate position using HarfBuzz's positioning information
+                        // x_offset and y_offset are adjustments before drawing the glyph
+                        let glyph_x = text_cursor
+                            + (shaped.x_offset as f32 / upem)
+                            + glyph_info.offset.x;
+                        let glyph_y = -0.5
+                            + (shaped.y_offset as f32 / upem)
+                            + glyph_info.offset.y;
+
                         instances.push(Instance {
-                            position: [skip + glyph_info.offset.x, -0.5 + glyph_info.offset.y],
+                            position: [glyph_x, glyph_y],
                             scale: [glyph_info.dimensions.x, -glyph_info.dimensions.y],
                             fg: *fg,
                             bg: *bg,
@@ -525,8 +519,12 @@ impl Renderer {
                             quadratic_off: glyph_info.bez2_off,
                             cubic_off: glyph_info.bez3_off,
                         });
-                        skip += glyph_info.advance;
+
+                        // Advance cursor using HarfBuzz's calculated advance
+                        // This already includes kerning and other adjustments
+                        text_cursor += shaped.x_advance as f32 / upem;
                     }
+                    skip = text_cursor;
                 }
                 Renderable::Space(space) => {
                     skip += space;

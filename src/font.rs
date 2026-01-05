@@ -180,6 +180,69 @@ impl FontContainer {
             }
     }
 
+    /// Load glyph information directly by glyph ID.
+    /// This is used by the HarfBuzz-based text shaper which provides glyph IDs directly.
+    /// Unlike `load_char_with_id`, this doesn't require the character to be in char_map.
+    pub fn load_glyph_by_id(&mut self, glyph_id: GlyphId) -> Option<GlyphInfo> {
+        // First check if we already have this glyph loaded via char_map
+        if let Some(c) = self.char_map.get(&glyph_id) {
+            if let Some(info) = self.locations.get(c) {
+                return Some(*info);
+            }
+        }
+
+        let units_per_em = self.units_per_em;
+        let shape = match Shape::from_glyph(self.font_arc.clone(), glyph_id) {
+            Some(x) => x,
+            None => return None,
+        };
+
+        let (lines_offset, bez2_offset, bez3_offset) = (
+            self.linear_points_buffer.len() as u32 / 4,
+            self.quadratic_points_buffer.len() as u32 / 6,
+            self.cubic_points_buffer.len() as u32 / 8,
+        );
+
+        for segment in shape.segments.into_iter() {
+            match segment {
+                Segment::LINE(line) => {
+                    self.line_curve_offsets
+                        .push(self.linear_points_buffer.len() as u32 / 4);
+                    self.linear_points_buffer.extend(line.to_f32_arr());
+                }
+                Segment::BEZ2(bez2) => {
+                    self.quadratic_curve_offsets
+                        .push(self.quadratic_points_buffer.len() as u32 / 6);
+                    self.quadratic_points_buffer.extend(bez2.to_f32_arr());
+                }
+                Segment::BEZ3(bez3) => {
+                    self.cubic_curve_offsets
+                        .push(self.cubic_points_buffer.len() as u32 / 8);
+                    self.cubic_points_buffer.extend(bez3.to_f32_arr());
+                }
+            }
+        }
+
+        Some(GlyphInfo {
+            glyph_id,
+            advance: self.font_arc.h_advance_unscaled(glyph_id) / units_per_em,
+            line_off: GlyphOffLen {
+                position: lines_offset,
+                len: self.linear_points_buffer.len() as u32 / 4 - lines_offset,
+            },
+            bez2_off: GlyphOffLen {
+                position: bez2_offset,
+                len: self.quadratic_points_buffer.len() as u32 / 6 - bez2_offset,
+            },
+            bez3_off: GlyphOffLen {
+                position: bez3_offset,
+                len: self.cubic_points_buffer.len() as u32 / 8 - bez3_offset,
+            },
+            offset: shape.offset,
+            dimensions: shape.dimensions,
+        })
+    }
+
     pub fn load_char(&mut self, c: char) -> Option<GlyphInfo> {
         let units_per_em = self.units_per_em;
         if let Some(x) = self.locations.get(&c) {

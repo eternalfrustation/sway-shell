@@ -5,6 +5,7 @@ pub mod font;
 pub mod layer;
 pub mod mpd;
 pub mod renderer;
+pub mod shaper;
 pub mod state;
 pub mod sway;
 pub mod network;

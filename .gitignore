@@ -1,6 +1,7 @@
 /target
 *.data
 *.otf
-*.ttf
 *.svg
 *.txt
+# Allow the test font for building
+!src/test_font.ttf
